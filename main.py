@@ -2,6 +2,15 @@ from typing import Union
 from fastapi import FastAPI,HTTPException, status, WebSocket, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
 from redis import asyncio as aioredis # This is the key change!
+
+#Cache implementation
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+from fastapi_cache.decorator import cache
+from contextlib import asynccontextmanager
+
+
+
 import asyncio
 #Juniper Modules
 from jnpr.junos import Device
@@ -29,9 +38,23 @@ redis_conn = Redis(host='localhost', port=6379)
 q = Queue('juniper', connection=redis_conn,default_result_ttl=86400)
 
 
-app = FastAPI()
+# 1. Define the lifespan (Startup/Shutdown logic)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Connect to Redis and init cache
+    redis = aioredis.from_url("redis://localhost", encoding="utf8", decode_responses=True)
+    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
+    
+    yield  # The app runs while this yield is active
+    
+    # Shutdown: Clean up (optional)
+    await redis.close()
+
+app = FastAPI(lifespan=lifespan)
 dev = Device(host='192.168.120.10', user='root', password='lab123')
 host='192.168.120.10'
+
+
 
 #TEMP for local testing
 # 1. Define the "origins" (the addresses of your frontend)
@@ -101,6 +124,7 @@ def get_devices(db: Session = Depends(get_db),
 
 
 @app.get("/device/{device_id}/interfaces")
+@cache(expire=60)
 async def get_interfaces(device_id: int):
 
     dev.open()
