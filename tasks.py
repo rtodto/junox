@@ -9,6 +9,17 @@ import logging
 import models 
 from dotenv import load_dotenv
 import os
+#Juniper Modules
+from jnpr.junos import Device
+from jnpr.junos.utils.config import Config
+from jnpr.junos.op.ethport import EthPortTable
+from lxml import etree
+
+#An ugly import
+from sqlalchemy.dialects.postgresql import insert
+from database import SessionLocal
+
+
 load_dotenv()
 
 #Temp: Until we implement better auth
@@ -27,7 +38,87 @@ logging.basicConfig(level=LOG_LEVEL,
 logger = logging.getLogger("RedisJobs")
 
 
+
+def get_interfaces_job(device_ip: str, device_id: int):
+    """
+    Fetch interface list from the live device. This is show interface output.
+    We are interested in the interfaces that are up and running, mac address, description, admin status, oper status.
+    However this doesn't include the L3 interfaces.
+    """
+    try:
+        dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
+        dev.open()
+        ports = EthPortTable(dev)
+        ports.get()
+        dev.close()
+        results = ports.items()
+
+        return {"interface_list": results}
+
+    except Exception as e:
+        return {
+             "status": "Error",
+             "device_ip": device_ip,
+             "error": str(e)
+        }
+
+def post_get_interfaces_job(job,connection, results):
+    """
+    By using PostgreSQL UPSERT method, we push what we get to the DB
+    """
+    
+    device_id = job.meta["device_id"]
+    data_to_upsert = []
+    for interface in results['interface_list']:
+      
+      interface_name = interface[0]
+      interface_dict = dict(interface[1])
+      
+      data_to_upsert.append({
+        "device_id": device_id,
+        "interface_name": interface_name,
+        "oper_status": interface_dict.get('oper'),
+        "admin_status": interface_dict.get('admin'),
+        "description": interface_dict.get('description'),
+        "mac_address": interface_dict.get('macaddr')
+      })
+      if not data_to_upsert:
+        return 
+      
+      with SessionLocal() as session:
+        try:
+            # Create the base insert statement
+            stmt = insert(models.EthInterfaces).values(data_to_upsert)
+
+            # Add the PostgreSQL "Upsert" logic
+            upsert_stmt = stmt.on_conflict_do_update(
+                constraint="uq_device_interface",
+                set_={
+                    "oper_status": stmt.excluded.oper_status,
+                    "admin_status": stmt.excluded.admin_status,
+                    "description": stmt.excluded.description,
+                    "mac_address": stmt.excluded.mac_address,
+                    #"interface_tagness": stmt.excluded.interface_tagness,
+                }
+            )
+
+            session.execute(upsert_stmt)
+            session.commit()
+            print(f"Successfully synced {len(data_to_upsert)} interfaces for device {device_id}")
+            
+        except Exception as e:
+            session.rollback()
+            print(f"Failed to sync: {e}")
+            raise
+      
+    
+      
+
+
 def get_switching_interfaces_job(device_ip: str):
+    """
+    Fetch switching interfaces from the live device. This is not show interface output.
+    """
     try:
         dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
         dev.open()
@@ -41,8 +132,8 @@ def get_switching_interfaces_job(device_ip: str):
             })     
 
         dev.close()
-        print("!!!!INTERFACE LIST!!!!")
-        print(interfaces_result)
+        #print("!!!!INTERFACE LIST!!!!")
+        #print(interfaces_result)
         
         return {"interfaces": interfaces_result}
     except Exception as e:
@@ -171,7 +262,9 @@ def fetch_vlans_job(device_ip: str, device_id: int):
              "error": str(e)
         }
 
-def run_post_fetch_vlans_job(job,connection, result):
+
+
+def post_fetch_vlans_job(job,connection, result):
     """
     This function is called after the fetch_vlans_job is completed.
     It processes the results of the fetch_vlans_job and updates the database. 
@@ -195,8 +288,7 @@ def run_post_fetch_vlans_job(job,connection, result):
         db_vlan_map = {"N/A": "N/A"} #so no vlan mapping i.e vlan_id: vlan_name
     else:
         db_vlan_map = {vlan.vlan_id: vlan.vlan_name for vlan in db_vlan_list}
-    print("DB VLAN MAP: ", db_vlan_map)
-    print("LIVE VLAN MAP: ", live_vlan_map)
+
 
     #compare live and db vlans: juniper returns vlan_id as string it is a problem
     live_vlan_ids = { int(vlan_id) for vlan_id in live_vlan_map.keys()}
@@ -210,7 +302,7 @@ def run_post_fetch_vlans_job(job,connection, result):
         if vlan_id in vlan_id_diff:
             vlan_list_diff.append({'vlan_id': vlan_id, 'vlan_name': vlan_name})
 
-    print("VLAN LIST DIFF: ", vlan_list_diff)  
+
     #Update DB with new vlans
     apiut.update_device_vlans_db(device_id, vlan_list_diff)
 

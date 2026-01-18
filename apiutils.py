@@ -1,6 +1,6 @@
 
 from database import SessionLocal
-from models import DeviceNet, VLANs 
+from models import * 
 
 class APIUtils:
     def __init__(self):
@@ -50,3 +50,4 @@ class APIUtils:
         self.db.commit()
 
         return True
+    

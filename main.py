@@ -95,17 +95,17 @@ app.add_middleware(
     allow_headers=["*"],              # Allows all headers
 )
 
-#Utilities
-def device_id_to_IP(device_id: int, db: Session):
-    """
-    We take device_id as input and we return the IP address of the device 
-    """
-    device = db.query(models.DeviceNet).filter(models.DeviceNet.id==device_id).first()
+# #Utilities
+# def device_id_to_IP(device_id: int, db: Session):
+#     """
+#     We take device_id as input and we return the IP address of the device 
+#     """
+#     device = db.query(models.DeviceNet).filter(models.DeviceNet.id==device_id).first()
 
-    if not device:
-        return None
+#     if not device:
+#         return None
     
-    return device.ip_address
+#     return device.ip_address
 
 @app.post("/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
@@ -120,8 +120,11 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = auth.create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.websocket("/ws/notifications")
+#@app.websocket("/ws/notifications")
 async def websocket_endpoint(websocket: WebSocket):
+    """
+    This was used before but after redis post run jobs, currently disabled.
+    """
     await websocket.accept()
     
     # Use the pool from app state
@@ -143,6 +146,10 @@ def get_devices(db: Session = Depends(get_db),
                 token: str = Depends(auth.oauth2_scheme),
                 current_user: models.User = Depends(auth.get_current_user)
                 ):
+    """
+    Returns the list of network devices from database
+    """
+
     # 1. Query all devices from the database
     devices = db.query(models.DeviceNet).all()
     
@@ -159,18 +166,31 @@ def get_devices(db: Session = Depends(get_db),
 @app.get("/device/{device_id}/interfaces")
 #@cache(expire=120)
 def get_interfaces(device_id: int,db: Session = Depends(get_db)):
+    """
+    Fetches the list of interfaces from the network device. It dispatches 
+    a redis job as it is an I/O job. 
+    """
+    device_ip = apiut.device_id_to_ip(device_id) 
+    job = q.enqueue(get_interfaces_job, 
+                   device_ip, device_id,
+                   on_success=post_get_interfaces_job
+                   )
+    job.meta["device_id"] = device_id
+    job.save_meta()
     
-    device_ip = apiut.device_id_to_ip(device_id)
-    dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
-    dev.open()
-    ports = EthPortTable(dev)
-    ports.get()
-    dev.close()
-    
-    return {"ports": ports.items()}
+    return {
+        "job_id": job.get_id(),
+        "status": "Queued",
+        "monitor_url": f"/job/{job.get_id()}"
+    }
+
+
 
 @app.get("/device/switching_interfaces/{device_id}")
 def get_switching_interfaces(device_id: int,db: Session = Depends(get_db)):
+    """
+    Redis job to fetch ethernet switching interfaces. We grab trunk,access interfaces etc.
+    """
     
     # Calculate IP here (sync)
     device_ip = apiut.device_id_to_ip(device_id)
@@ -184,7 +204,9 @@ def get_switching_interfaces(device_id: int,db: Session = Depends(get_db)):
 
 @app.post("/device/provision/{device_hostname}")
 def provision_device(device_hostname: str, db: Session = Depends(get_db)):
-    
+    """
+    We register a new device on the database and collect the facts from the device.
+    """
     #This is not so strict I know but it works for now
     if ut.identify_address_type(device_hostname) == "Hostname":
         device_ip = ut.resolve_hostname(device_hostname)
@@ -202,6 +224,9 @@ def provision_device(device_hostname: str, db: Session = Depends(get_db)):
 
 @app.post("/device/create-vlan/{device_id}/{vlan_id}")
 def create_vlan(device_id: int, vlan_id: int, vlan_name: str, db: Session = Depends(get_db)):
+  """
+  Redis job dispatches to create vlan on the device.
+  """
 
   device_ip = apiut.device_id_to_ip(device_id)
   job = q.enqueue(create_vlan_job,device_ip,vlan_id,vlan_name) 
@@ -220,6 +245,10 @@ def set_interface_vlan(
     vlan_id: int, 
     db: Session = Depends(get_db)
     ):
+    """
+    Redis job dispatcher to assign an interface to a specific vlan.
+    """
+
     device_ip = apiut.device_id_to_ip(device_id)
     job = q.enqueue(set_interface_vlan_job,device_ip,interface_name,vlan_id) 
     return {
@@ -231,6 +260,12 @@ def set_interface_vlan(
 
 @app.get("/device/{device_id}/fetch-vlans")
 def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
+    """
+    Redis dispatcher: 
+          - fetch_vlans_job: fetch vlans from the live device
+          - post_fetch_vlans_job: compare them with the existing vlans on the database and add new ones.
+    """
+
     # Calculate IP here (sync)
     device_ip = apiut.device_id_to_ip(device_id)
     if not device_ip:
@@ -238,7 +273,7 @@ def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
 
     job = q.enqueue(fetch_vlans_job, 
                     device_ip, device_id,
-                    on_success=run_post_fetch_vlans_job
+                    on_success=post_fetch_vlans_job
                     #on_failure=run_post_fetch_vlans_job
                     ) 
     job.meta["device_id"] = device_id
@@ -254,6 +289,9 @@ def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
 
 @app.get("/device/{device_id}/mac-table")
 def fetch_mac_table(device_id: int, db: Session = Depends(get_db)):
+    """
+    Redis dispatcher to fetch mac table
+    """
     # Calculate IP here (sync)
     device_ip = apiut.device_id_to_ip(device_id)
     if not device_ip:
@@ -265,6 +303,7 @@ def fetch_mac_table(device_id: int, db: Session = Depends(get_db)):
         "status": "Queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
+
 
 @app.get("/job/{job_id}")
 def get_job_status(job_id: str):

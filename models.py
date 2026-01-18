@@ -1,4 +1,4 @@
-from sqlalchemy import String, ForeignKey, Integer, BigInteger, Boolean
+from sqlalchemy import String, ForeignKey, Integer, BigInteger, Boolean,UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 from typing import List
@@ -28,6 +28,26 @@ class DeviceNet(Base):
     )
     vlans: Mapped[List["VLANs"]] = relationship(
         back_populates="device", cascade="all, delete-orphan"
+    )
+    eth_interfaces_entries: Mapped[List["EthInterfaces"]] = relationship(
+        back_populates="device", cascade="all, delete-orphan"
+    )
+
+class EthInterfaces(Base):
+    __tablename__ = "eth_interfaces"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    interface_name: Mapped[str] = mapped_column(String(50))
+    oper_status: Mapped[str] = mapped_column(String(50))
+    admin_status: Mapped[str] = mapped_column(String(50))
+    description: Mapped[str] = mapped_column(String(50),nullable=True)
+    mac_address: Mapped[str] = mapped_column(String(17))
+    interface_tagness: Mapped[str] = mapped_column(String(50),nullable=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    device: Mapped["DeviceNet"] = relationship(back_populates="eth_interfaces_entries")
+
+    #we want uniqueness with interface name and device id
+    __table_args__ = (
+        UniqueConstraint("device_id", "interface_name", name="uq_device_interface"),
     )
 
 class MacTable(Base):
