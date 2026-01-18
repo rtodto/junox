@@ -3,7 +3,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 from typing import List
 
-class Device(Base):
+class DeviceNet(Base):
     __tablename__ = "devices"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -14,7 +14,7 @@ class Device(Base):
     os_version: Mapped[str] = mapped_column(String(20))
     model: Mapped[str] = mapped_column(String(20))
     brand: Mapped[str] = mapped_column(String(20)) #cisco, juniper, paloalto etc
-
+    serialnumber: Mapped[str] = mapped_column(String(20) , nullable=False ,server_default="XXXXXX")
 
     # Relationships with Cascading Deletes
     mac_entries: Mapped[List["MacTable"]] = relationship(
@@ -26,6 +26,9 @@ class Device(Base):
     routing_entries: Mapped[List["RoutingTable"]] = relationship(
         back_populates="device", cascade="all, delete-orphan"
     )
+    vlans: Mapped[List["VLANs"]] = relationship(
+        back_populates="device", cascade="all, delete-orphan"
+    )
 
 class MacTable(Base):
     __tablename__ = "mac_table"
@@ -33,8 +36,16 @@ class MacTable(Base):
     address: Mapped[str] = mapped_column(String(17))
     vlan_id: Mapped[int] = mapped_column(Integer)
     interface: Mapped[str] = mapped_column(String(50))
-    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"))
-    device: Mapped["Device"] = relationship(back_populates="mac_entries")
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    device: Mapped["DeviceNet"] = relationship(back_populates="mac_entries")
+
+class VLANs(Base):
+    __tablename__ = "vlans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    vlan_id: Mapped[int] = mapped_column(Integer)
+    vlan_name: Mapped[str] = mapped_column(String(50))
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    device: Mapped["DeviceNet"] = relationship(back_populates="vlans")
 
 class ArpTable(Base):
     __tablename__ = "arp_table"
@@ -42,8 +53,8 @@ class ArpTable(Base):
     ip_address: Mapped[str] = mapped_column(String(15))
     mac_address: Mapped[str] = mapped_column(String(17))
     interface: Mapped[str] = mapped_column(String(50))
-    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"))
-    device: Mapped["Device"] = relationship(back_populates="arp_entries")
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    device: Mapped["DeviceNet"] = relationship(back_populates="arp_entries")
 
 class RoutingTable(Base):
     __tablename__ = "routing_table"
@@ -55,8 +66,8 @@ class RoutingTable(Base):
     age: Mapped[str] = mapped_column(String(20), nullable=True)
 
     # Link to the device
-    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"))
-    device: Mapped["Device"] = relationship(back_populates="routing_entries")
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    device: Mapped["DeviceNet"] = relationship(back_populates="routing_entries")
 
 
 class User(Base):

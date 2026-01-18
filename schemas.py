@@ -10,6 +10,7 @@ class DeviceResponse(BaseModel):
     os_version: str
     model: str
     brand: str
+    serialnumber: str
 
     class Config:
         from_attributes = True # Allows Pydantic to read SQLAlchemy objects

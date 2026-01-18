@@ -1,14 +1,14 @@
 from typing import Union
-from fastapi import FastAPI,HTTPException, status, WebSocket, Depends, status
+from fastapi import FastAPI,HTTPException, WebSocket, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
 from redis import asyncio as aioredis # This is the key change!
+
 
 #Cache implementation
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
 from fastapi_cache.decorator import cache
 from contextlib import asynccontextmanager
-
 
 
 import asyncio
@@ -21,40 +21,63 @@ from lxml import etree
 #redis
 from redis import Redis
 from rq import Queue
-from tasks import create_vlan_job  # Import the function reference
+#from tasks import create_vlan_job, fetch_mac_table_job, fetch_vlans_job,provision_device_job  # Import the function reference
+from tasks import *
 
 #SQL
 from sqlalchemy.orm import Session
 from typing import List
 import models
-from database import get_db # The function we wrote earlier
+from database import get_db 
 from schemas import DeviceResponse
 import auth, models, database
 from fastapi.middleware.cors import CORSMiddleware # Import the middleware
 
+#Custom classes
+from utils import Utils 
+from apiutils import APIUtils  
 
-redis_conn = Redis(host='localhost', port=6379)
-# We name the queue 'juniper' to keep it organized
-q = Queue('juniper', connection=redis_conn,default_result_ttl=86400)
+from dotenv import load_dotenv
+import os
+load_dotenv()
 
+#Temp: Until we implement better auth
+DEVICE_USER = os.getenv("DEVICE_USER")
+DEVICE_PASSWORD=os.getenv("DEVICE_PASSWORD")
+REDIS_HOST=os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT=os.getenv("REDIS_PORT", "6379")
 
-# 1. Define the lifespan (Startup/Shutdown logic)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Connect to Redis and init cache
-    redis = aioredis.from_url("redis://localhost", encoding="utf8", decode_responses=True)
-    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
+    redis_conn = f"redis://{REDIS_HOST}:{REDIS_PORT}"
+    # Create ONE async connection pool
+    pool = aioredis.ConnectionPool.from_url(
+        redis_conn, encoding="utf8", decode_responses=True
+    )
+    redis_client = aioredis.Redis(connection_pool=pool)
     
-    yield  # The app runs while this yield is active
+    # Init Cache with this client
+    FastAPICache.init(RedisBackend(redis_client), prefix="fastapi-cache")
     
-    # Shutdown: Clean up (optional)
-    await redis.close()
+    # Store it in app state so other routes can use it
+    app.state.redis = redis_client
+    
+    yield
+    
+    # Clean up
+    await redis_client.close()
+    await pool.disconnect()
 
+# For RQ (Sync), it's okay to keep one separate sync connection 
+# because RQ doesn't support async redis-py clients yet.
+sync_redis = Redis(host='localhost', port=6379)
+q = Queue('juniper', connection=sync_redis)
+
+
+##
 app = FastAPI(lifespan=lifespan)
-dev = Device(host='192.168.120.10', user='root', password='lab123')
-host='192.168.120.10'
-
-
+apiut = APIUtils()
+ut = Utils()
 
 #TEMP for local testing
 # 1. Define the "origins" (the addresses of your frontend)
@@ -72,6 +95,17 @@ app.add_middleware(
     allow_headers=["*"],              # Allows all headers
 )
 
+#Utilities
+def device_id_to_IP(device_id: int, db: Session):
+    """
+    We take device_id as input and we return the IP address of the device 
+    """
+    device = db.query(models.DeviceNet).filter(models.DeviceNet.id==device_id).first()
+
+    if not device:
+        return None
+    
+    return device.ip_address
 
 @app.post("/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
@@ -90,19 +124,18 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
-    # Use the modern redis-py async client
-    redis = await aioredis.from_url("redis://localhost:6379")
+    # Use the pool from app state
+    redis = websocket.app.state.redis 
     pubsub = redis.pubsub()
     await pubsub.subscribe("job_notifications")
 
     try:
         async for message in pubsub.listen():
             if message["type"] == "message":
-                await websocket.send_text(message["data"].decode("utf-8"))
-    except Exception as e:
-        print(f"Connection closed: {e}")
+                # With decode_responses=True in the pool, no need to .decode()
+                await websocket.send_text(message["data"]) 
     finally:
-        await redis.close() # Clean up connection
+        await pubsub.unsubscribe("job_notifications")
 
 
 @app.get("/devices", response_model=List[DeviceResponse])
@@ -111,7 +144,7 @@ def get_devices(db: Session = Depends(get_db),
                 current_user: models.User = Depends(auth.get_current_user)
                 ):
     # 1. Query all devices from the database
-    devices = db.query(models.Device).all()
+    devices = db.query(models.DeviceNet).all()
     
     print(f"User {current_user.username} is requesting the device list.")
     
@@ -124,9 +157,11 @@ def get_devices(db: Session = Depends(get_db),
 
 
 @app.get("/device/{device_id}/interfaces")
-@cache(expire=60)
-async def get_interfaces(device_id: int):
-
+#@cache(expire=120)
+def get_interfaces(device_id: int,db: Session = Depends(get_db)):
+    
+    device_ip = apiut.device_id_to_ip(device_id)
+    dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
     dev.open()
     ports = EthPortTable(dev)
     ports.get()
@@ -134,52 +169,118 @@ async def get_interfaces(device_id: int):
     
     return {"ports": ports.items()}
 
-@app.post("/device/{device_id}/{vlan_id}")
-def set_vlan(vlan_id: int,vlan_name: str):
+@app.get("/device/switching_interfaces/{device_id}")
+def get_switching_interfaces(device_id: int,db: Session = Depends(get_db)):
+    
+    # Calculate IP here (sync)
+    device_ip = apiut.device_id_to_ip(device_id)
 
-  job = q.enqueue(create_vlan_job,host,vlan_id,vlan_name) 
+    job = q.enqueue(get_switching_interfaces_job, device_ip) 
+    return {
+        "job_id": job.get_id(),
+        "status": "Queued",
+        "monitor_url": f"/job/{job.get_id()}"
+    }
+
+@app.post("/device/provision/{device_hostname}")
+def provision_device(device_hostname: str, db: Session = Depends(get_db)):
+    
+    #This is not so strict I know but it works for now
+    if ut.identify_address_type(device_hostname) == "Hostname":
+        device_ip = ut.resolve_hostname(device_hostname)
+    else:
+        device_ip = device_hostname
+    
+    job = q.enqueue(provision_device_job, device_ip) 
+    return {
+        "job_id": job.get_id(),
+        "status": "Queued",
+        "monitor_url": f"/job/{job.get_id()}"
+    }    
+
+
+
+@app.post("/device/create-vlan/{device_id}/{vlan_id}")
+def create_vlan(device_id: int, vlan_id: int, vlan_name: str, db: Session = Depends(get_db)):
+
+  device_ip = apiut.device_id_to_ip(device_id)
+  job = q.enqueue(create_vlan_job,device_ip,vlan_id,vlan_name) 
   return {
         "job_id": job.get_id(),
         "status": "Queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
+
+
+
+@app.post("/device/assign-vlan/{device_id}/{vlan_id}")
+def set_interface_vlan(
+    device_id: int, 
+    interface_name: str, 
+    vlan_id: int, 
+    db: Session = Depends(get_db)
+    ):
+    device_ip = apiut.device_id_to_ip(device_id)
+    job = q.enqueue(set_interface_vlan_job,device_ip,interface_name,vlan_id) 
+    return {
+        "job_id": job.get_id(),
+        "status": "Queued",
+        "monitor_url": f"/job/{job.get_id()}"
+    }
     
+
+@app.get("/device/{device_id}/fetch-vlans")
+def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
+    # Calculate IP here (sync)
+    device_ip = apiut.device_id_to_ip(device_id)
+    if not device_ip:
+         raise HTTPException(status_code=404, detail="Device not found")
+
+    job = q.enqueue(fetch_vlans_job, 
+                    device_ip, device_id,
+                    on_success=run_post_fetch_vlans_job
+                    #on_failure=run_post_fetch_vlans_job
+                    ) 
+    job.meta["device_id"] = device_id
+    job.save_meta()
+
+    return {
+        "job_id": job.get_id(),
+        "status": "Queued",
+        "monitor_url": f"/job/{job.get_id()}"
+    }
+
+
+
 @app.get("/device/{device_id}/mac-table")
-def get_mac_table(device_id: int):
+def fetch_mac_table(device_id: int, db: Session = Depends(get_db)):
+    # Calculate IP here (sync)
+    device_ip = apiut.device_id_to_ip(device_id)
+    if not device_ip:
+         raise HTTPException(status_code=404, detail="Device not found")
 
-    try:
+    job = q.enqueue(fetch_mac_table_job, device_ip, device_id) 
+    return {
+        "job_id": job.get_id(),
+        "status": "Queued",
+        "monitor_url": f"/job/{job.get_id()}"
+    }
 
-        dev.open()
-        results=[]
-        mac_data = dev.rpc.get_ethernet_switching_table_information()
-        #raw_xml = etree.tostring(mac_data, encoding='unicode', pretty_print=True)
-        #print(raw_xml)
-        # 2. Parse the XML into a Python List of Dictionaries
-        results = []
-        # vJunos typically uses 'l2ng' tags for Next-Gen Layer 2
-        for entry in mac_data.xpath('.//l2ng-mac-entry'):
-            results.append({
-                "vlan": entry.findtext('l2ng-l2-mac-vlan-name', default="N/A").strip(),
-                "mac": entry.findtext('l2ng-l2-mac-address', default="N/A").strip(),
-                "interface": entry.findtext('l2ng-l2-mac-logical-interface', default="N/A").strip(),
-            })
-            
-        dev.close()
-
+@app.get("/job/{job_id}")
+def get_job_status(job_id: str):
+    job = q.fetch_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    if job.is_failed:
         return {
-            "status": "success",
-            "device_id": device_id,
-            "mac_table" : results
+            "job_id": job_id,
+            "status": "failed",
+            "error": str(job.exc_info)
         }
-    
-    except ConnectionError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not connect to the device"
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred: {str(e)}"
-        )
+        
+    return {
+        "job_id": job_id,
+        "status": job.get_status(),
+        "result": job.result
+    }

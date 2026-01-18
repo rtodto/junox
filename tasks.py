@@ -2,9 +2,261 @@ from jnpr.junos import Device
 from jnpr.junos.utils.config import Config
 from fastapi import FastAPI,HTTPException, status
 import redis
+from rq import get_current_job
+import json
+import apiutils
+import logging
+import models 
+from dotenv import load_dotenv
+import os
+load_dotenv()
 
-def create_vlan_job(host, vlan_id, vlan_name):
-    dev = Device(host=host, user='root', password='lab123')
+#Temp: Until we implement better auth
+DEVICE_USER = os.getenv("DEVICE_USER")
+DEVICE_PASSWORD=os.getenv("DEVICE_PASSWORD")
+REDIS_HOST = os.getenv("REDIS_HOST")
+REDIS_PORT = os.getenv("REDIS_PORT")
+
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
+
+apiut = apiutils.APIUtils()
+
+LOG_LEVEL = os.getenv("LOG_LEVEL")
+logging.basicConfig(level=LOG_LEVEL,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("RedisJobs")
+
+
+def get_switching_interfaces_job(device_ip: str):
+    try:
+        dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
+        dev.open()
+        all_interfaces = dev.rpc.get_ethernet_switching_interface_details()
+        interfaces_result = []
+        for entry in all_interfaces.xpath('.//l2ng-l2ald-iff-interface-entry'):
+            interfaces_result.append({
+                "interface_name": entry.findtext('l2iff-interface-name', default="N/A").strip(),
+                "interface_tagness": entry.findtext('l2iff-interface-vlan-member-tagness', default="N/A").strip()
+                
+            })     
+
+        dev.close()
+        print("!!!!INTERFACE LIST!!!!")
+        print(interfaces_result)
+        
+        return {"interfaces": interfaces_result}
+    except Exception as e:
+        return {
+             "status": "Error",
+             "device_ip": device_ip,
+             "error": str(e)
+        }
+
+
+def fetch_mac_table_job(device_ip: str, device_id: int):
+    try:
+        dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
+        dev.open()
+        
+        mac_data = dev.rpc.get_ethernet_switching_table_information()
+        
+        logger.info(f"Fetched MAC table for device {device_ip}")
+        # Parse the XML into a Python List of Dictionaries
+        results = []
+        # vJunos typically uses 'l2ng' tags for Next-Gen Layer 2
+        for entry in mac_data.xpath('.//l2ng-mac-entry'):
+            results.append({
+                "vlan": entry.findtext('l2ng-l2-mac-vlan-name', default="N/A").strip(),
+                "mac": entry.findtext('l2ng-l2-mac-address', default="N/A").strip(),
+                "interface": entry.findtext('l2ng-l2-mac-logical-interface', default="N/A").strip(),
+            })
+            
+        dev.close()
+        
+        r.publish("job_notifications", "fetch_mac_table")
+        return {
+            "status": "Success",
+            "device_id": device_id,
+            "mac_table" : results
+        }
+    
+    except Exception as e:
+        return {
+             "status": "Error",
+             "device_id": device_id,
+             "error": str(e)
+        }
+
+
+def provision_device_job(device_ip: str):
+    """
+    This function provisions a device by fetching its facts and calls APIUtils.add_device_to_db.
+    """
+    try:
+        # Use Juniper Device class (imported as Device)
+        dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
+        dev.open()
+     
+        # Use our DB Model class (DeviceNet)
+        new_device = models.DeviceNet(
+            hostname=dev.facts['hostname'],
+            ip_address=device_ip,
+            platform="NA",
+            type="switch",           
+            os_version=dev.facts['version'], 
+            model=dev.facts['model'],           
+            brand="NA",
+            serialnumber=dev.facts['serialnumber'] # Note: fixed typo from serial_number to serialnumber based on models.py
+        )
+        logger.info(f"Provisioned device {device_ip}")
+        
+        dev.close()
+        
+        #Dispatch the job to util function
+        apiut.add_device_to_db(new_device)
+
+        r.publish("job_notifications", "provision_device")
+        return {
+            "status": "Success",
+            "device_ip": device_ip,
+            "job_type" : "provision_device",
+            "message": f"Device {device_ip} successfully provisioned."
+        }    
+    except Exception as e:
+        return {
+             "status": "Error",
+             "device_ip": device_ip,
+             "error": str(e)
+        }
+
+def fetch_vlans_job(device_ip: str, device_id: int):
+    try:
+        dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
+        dev.open()
+        
+        vlans_data = dev.rpc.get_vlan_information()
+
+        # Parse the XML into a Python List of Dictionaries
+        results = []
+        for entry in vlans_data.xpath('.//l2ng-l2ald-vlan-instance-group'):
+            results.append({
+                "vlan_id": entry.findtext('l2ng-l2rtb-vlan-tag', default="N/A").strip(),
+                "vlan_name": entry.findtext('l2ng-l2rtb-vlan-name', default="N/A").strip(),
+            })
+        logger.info(f"Fetched VLANs for device {device_ip}")
+            
+        dev.close()
+
+        #redis job id that is created for this task
+        job_id = get_current_job().id 
+        message = {
+            "job_type": "fetch_vlans",
+            "job_id": job_id,
+            "device_id": device_id
+        }
+        r.publish("job_notifications", json.dumps(message)) 
+
+        return {
+            "status": "Success",
+            "device_id": device_id,
+            "job_type" : "fetch_vlans",
+            "vlans" : results
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching VLANs for device {device_ip}: {str(e)}")
+        return {
+             "status": "Error",
+             "device_id": device_id,
+             "error": str(e)
+        }
+
+def run_post_fetch_vlans_job(job,connection, result):
+    """
+    This function is called after the fetch_vlans_job is completed.
+    It processes the results of the fetch_vlans_job and updates the database. 
+    We ignore (don't compare) the vlan names for simplicity for now. It can be added later.
+    Although DB should be the source of truth, we don't delete any vlan from the device if it is not in the DB.
+    We only add vlans to the device if they are not in the device. We can add a manual force-sync or diff 
+    calculator to give more control to the user.
+    """
+
+    device_id = job.meta["device_id"]
+    logger.info("!!!!!POST RUN AFTER FETCH VLANS JOB!!!!!")
+    #[{'vlan_id': '100', 'vlan_name': 'auto-vlan'}, {'vlan_id': '1000', 'vlan_name': 'auto-vlan-1000'}
+    #we get this from the fetch_vlans_job: vlan id is string so we convert it to int
+    live_vlan_list = result['vlans']
+    live_vlan_map = {int(vlan['vlan_id']): vlan.get('vlan_name', 'auto-vlan-{}'.format(vlan['vlan_id'])) for vlan in live_vlan_list}
+    
+    #Get all vlans from DB. Result is a list of dictionaries.
+    db_vlan_list = apiut.get_device_vlans(device_id) 
+    if db_vlan_list is None: #If there are no vlans in DB, this must be first run.
+        db_vlan_list = []
+        db_vlan_map = {"N/A": "N/A"} #so no vlan mapping i.e vlan_id: vlan_name
+    else:
+        db_vlan_map = {vlan.vlan_id: vlan.vlan_name for vlan in db_vlan_list}
+    print("DB VLAN MAP: ", db_vlan_map)
+    print("LIVE VLAN MAP: ", live_vlan_map)
+
+    #compare live and db vlans: juniper returns vlan_id as string it is a problem
+    live_vlan_ids = { int(vlan_id) for vlan_id in live_vlan_map.keys()}
+    db_vlan_ids = { int(vlan_id) for vlan_id in db_vlan_map.keys()}
+    vlan_id_diff = live_vlan_ids - db_vlan_ids
+    print(vlan_id_diff)
+
+    #Basic stuff add vlan to DB if it isn't available as we normally add vlans via UI
+    vlan_list_diff = [] #this is a list of dictionaries {'vlan_id': '100', 'vlan_name': 'auto-vlan'}
+    for vlan_id, vlan_name in live_vlan_map.items():
+        if vlan_id in vlan_id_diff:
+            vlan_list_diff.append({'vlan_id': vlan_id, 'vlan_name': vlan_name})
+
+    print("VLAN LIST DIFF: ", vlan_list_diff)  
+    #Update DB with new vlans
+    apiut.update_device_vlans_db(device_id, vlan_list_diff)
+
+
+def set_interface_vlan_job(device_ip, interface, vlan_id):
+    try:
+        dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
+        dev.open()
+        logger.info(f"Set interface {interface} to VLAN {vlan_id} for device {device_ip}")
+        cu = Config(dev)
+        commands = f"""
+        set interfaces {interface} unit 0 family ethernet-switching vlan members {vlan_id}
+        """
+        cu.load(commands,format="set")
+        cu.commit(comment=f"Automation: Set interface {interface} to VLAN {vlan_id}")
+        dev.close()
+
+        job_id = get_current_job().get_id()      
+        message = {
+            "job_type": "set_interface_vlan",
+            "device_ip": device_ip,
+            "interface": interface,
+            "vlan_id": vlan_id,
+            "job_id": job_id
+        }
+        r.publish("job_notifications", json.dumps(message))
+        
+        return {
+            "status": "Success",
+            "vlan_id": vlan_id,
+            "job_type" : "set_interface_vlan",
+            "message": f"Interface {interface} successfully set to VLAN {vlan_id}."
+        }    
+    except Exception as e:
+        return {
+             "status": "Error",
+             "device_ip": device_ip,
+             "error": str(e)
+        }
+
+def create_vlan_job(device_ip, vlan_id, vlan_name):
+    """
+       This function creates a VLAN on a Juniper device.
+    """
+
+    dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
     try:
         dev.open()
         cu = Config(dev)
@@ -14,29 +266,35 @@ def create_vlan_job(host, vlan_id, vlan_name):
         cu.load(commands,format="set")
         cu.commit(comment=f"Automation: Created VLAN {vlan_id}")
         dev.close()
-        
-        r = redis.Redis(host='localhost', port=6379)
-        message = f"VLAN {vlan_id} has been deployed successfully."
-        print(f"DEBUG: Publishing to Redis: {message}")
-    
-        r.publish("job_notifications", message)
+
+        job_id = get_current_job().get_id()      
+        message = {
+            "job_type": "create_vlan",
+            "device_ip": device_ip,
+            "vlan_id": vlan_id,
+            "job_id": job_id
+        }
+        logger.info(f"Created VLAN {vlan_id} for device {device_ip}")
+        r.publish("job_notifications", json.dumps(message))
         
         return {
-            "status": "success",
-            #"device_id": device_id,
+            "status": "Success",
             "vlan_id": vlan_id,
+            "job_type" : "create_vlan",
             "message": f"VLAN {vlan_id} successfully created."
         }    
 
     except ConnectionError:
+        logger.error(f"Could not connect to device {device_ip}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Could not connect to the device"
         )
 
     except Exception as e:
+        logger.error(f"An unexpected error occurred: {str(e)}")
         raise HTTPException(
-            status_code=status,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred: {str(e)}"
         )
     

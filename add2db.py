@@ -1,12 +1,12 @@
+from models import DeviceNet, MacTable, ArpTable, RoutingTable
 from database import SessionLocal
-from models import Device, MacTable, ArpTable, RoutingTable
 
 def seed_data():
     db = SessionLocal()
 
     try:
         # 1. Create the Device with your new fields
-        new_device = Device(
+        new_device = DeviceNet(
             hostname="vswitch1",
             ip_address="192.168.120.10",
             platform="juniper",
