@@ -21,7 +21,6 @@ from lxml import etree
 #redis
 from redis import Redis
 from rq import Queue
-#from tasks import create_vlan_job, fetch_mac_table_job, fetch_vlans_job,provision_device_job  # Import the function reference
 from tasks import *
 
 #SQL
@@ -79,6 +78,8 @@ app = FastAPI(lifespan=lifespan)
 apiut = APIUtils()
 ut = Utils()
 
+
+#
 #TEMP for local testing
 # 1. Define the "origins" (the addresses of your frontend)
 origins = [
@@ -95,17 +96,6 @@ app.add_middleware(
     allow_headers=["*"],              # Allows all headers
 )
 
-# #Utilities
-# def device_id_to_IP(device_id: int, db: Session):
-#     """
-#     We take device_id as input and we return the IP address of the device 
-#     """
-#     device = db.query(models.DeviceNet).filter(models.DeviceNet.id==device_id).first()
-
-#     if not device:
-#         return None
-    
-#     return device.ip_address
 
 @app.post("/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
@@ -143,7 +133,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/devices", response_model=List[DeviceResponse])
 def get_devices(db: Session = Depends(get_db),
-                token: str = Depends(auth.oauth2_scheme),
+                #token: str = Depends(auth.oauth2_scheme),
                 current_user: models.User = Depends(auth.get_current_user)
                 ):
     """
