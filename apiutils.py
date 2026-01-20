@@ -1,6 +1,5 @@
-
-from database import SessionLocal
-from models import * 
+from .database import SessionLocal
+from .models import * 
 
 class APIUtils:
     def __init__(self):
@@ -50,5 +49,4 @@ class APIUtils:
         self.db.commit()
 
         return True
-    
     

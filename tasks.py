@@ -4,9 +4,9 @@ from fastapi import FastAPI,HTTPException, status
 import redis
 from rq import get_current_job
 import json
-import apiutils
+from juniper_cfg import apiutils
 import logging
-import models 
+from juniper_cfg import models 
 from dotenv import load_dotenv
 import os
 #Juniper Modules
@@ -17,7 +17,7 @@ from lxml import etree
 
 #An ugly import
 from sqlalchemy.dialects.postgresql import insert
-from database import SessionLocal
+from juniper_cfg.database import *
 
 
 load_dotenv()
@@ -285,7 +285,7 @@ def post_fetch_vlans_job(job,connection, result):
     db_vlan_list = apiut.get_device_vlans(device_id) 
     if db_vlan_list is None: #If there are no vlans in DB, this must be first run.
         db_vlan_list = []
-        db_vlan_map = {"N/A": "N/A"} #so no vlan mapping i.e vlan_id: vlan_name
+        db_vlan_map = {} #so no vlan mapping i.e vlan_id: vlan_name
     else:
         db_vlan_map = {vlan.vlan_id: vlan.vlan_name for vlan in db_vlan_list}
 
@@ -294,6 +294,8 @@ def post_fetch_vlans_job(job,connection, result):
     live_vlan_ids = { int(vlan_id) for vlan_id in live_vlan_map.keys()}
     db_vlan_ids = { int(vlan_id) for vlan_id in db_vlan_map.keys()}
     vlan_id_diff = live_vlan_ids - db_vlan_ids
+        
+    
     print(vlan_id_diff)
 
     #Basic stuff add vlan to DB if it isn't available as we normally add vlans via UI
@@ -313,7 +315,11 @@ def set_interface_vlan_job(device_ip, interface, vlan_id):
         dev.open()
         logger.info(f"Set interface {interface} to VLAN {vlan_id} for device {device_ip}")
         cu = Config(dev)
+        #set and del command might look stupid but if the config stanza is not available
+        #it returns a warning/error. We avoid it by this trick.
         commands = f"""
+        set interfaces {interface} unit 0 family ethernet-switching vlan members {vlan_id} 
+        del interfaces {interface} unit 0 family ethernet-switching vlan 
         set interfaces {interface} unit 0 family ethernet-switching vlan members {vlan_id}
         """
         cu.load(commands,format="set")

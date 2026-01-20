@@ -1,6 +1,6 @@
 from sqlalchemy import String, ForeignKey, Integer, BigInteger, Boolean,UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from database import Base
+from .database import Base
 from typing import List
 
 class DeviceNet(Base):

@@ -10,8 +10,9 @@ pigar
 rq-worker.sh
 requirements.txt
 test.py
-
-
+*.bkp
+*.old
+Trash/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
