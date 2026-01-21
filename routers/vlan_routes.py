@@ -31,7 +31,7 @@ def create_vlan(device_id: int, vlan_id: int, vlan_name: str, db: Session = Depe
     }
 
 @router.post("/assign-vlan/{device_id}/{vlan_id}")
-def set_interface_vlan(
+def set_access_interface_vlan(
     device_id: int, 
     interface_name: str, 
     vlan_id: int, 
@@ -48,6 +48,26 @@ def set_interface_vlan(
         "status": "Queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
+
+@router.post("/trunk_vlan/{device_id}/{vlan_id}")
+def set_trunk_interface_vlan(device_id: int, interface_name: str, vlan_id: int):
+    """
+    We set interface_mode to either trunk or access however
+    Junos doesn't allow to set an interface to trunk mode without a vlan specified
+    so we have to give the code a vlan so user has to give a vlan first. Further 
+    operations can just use the set interface vlan endpoint.
+    """
+    
+    device_ip = apiut.device_id_to_ip(device_id)
+
+    job = q.enqueue(set_trunk_interface_vlan_job,device_ip,interface_name,vlan_id) 
+    return {
+        "job_id": job.get_id(),
+        "status": "Queued",
+        "monitor_url": f"/job/{job.get_id()}"
+    }
+
+
 
 @router.get("/{device_id}/fetch-vlans")
 def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
@@ -75,3 +95,5 @@ def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
         "status": "Queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
+
+

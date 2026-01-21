@@ -115,25 +115,29 @@ def post_get_interfaces_job(job,connection, results):
       
 
 
-def get_switching_interfaces_job(device_ip: str):
+def get_switching_interfaces_job(device_id:int, device_ip: str):
     """
     Fetch switching interfaces from the live device. This is not show interface output.
     """
+
     try:
         dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
         dev.open()
         all_interfaces = dev.rpc.get_ethernet_switching_interface_details()
         interfaces_result = []
         for entry in all_interfaces.xpath('.//l2ng-l2ald-iff-interface-entry'):
-            interfaces_result.append({
-                "interface_name": entry.findtext('l2iff-interface-name', default="N/A").strip(),
-                "interface_tagness": entry.findtext('l2iff-interface-vlan-member-tagness', default="N/A").strip()
+            interface_name = entry.findtext('l2iff-interface-name', default="N/A").strip()
+            interface_tagness = entry.findtext('l2iff-interface-vlan-member-tagness', default="N/A").strip()
+            if interface_name:
+              interfaces_result.append({
+                  "interface_name": interface_name.removesuffix(".0"),
+                  "interface_tagness": interface_tagness
                 
             })     
 
         dev.close()
-        #print("!!!!INTERFACE LIST!!!!")
-        #print(interfaces_result)
+        #Update interface tagness in the database blindly. It is not costing much.
+        apiut.update_db_interface_tagness(device_id,interfaces_result)
         
         return {"interfaces": interfaces_result}
     except Exception as e:
@@ -143,6 +147,9 @@ def get_switching_interfaces_job(device_ip: str):
              "error": str(e)
         }
 
+    finally:
+        if dev:
+            dev.close()
 
 def fetch_mac_table_job(device_ip: str, device_id: int):
     try:
@@ -177,6 +184,10 @@ def fetch_mac_table_job(device_ip: str, device_id: int):
              "device_id": device_id,
              "error": str(e)
         }
+
+    finally:
+        if dev:
+            dev.close()
 
 
 def provision_device_job(device_ip: str):
@@ -219,6 +230,10 @@ def provision_device_job(device_ip: str):
              "device_ip": device_ip,
              "error": str(e)
         }
+
+    finally:
+        if dev:
+            dev.close()
 
 def fetch_vlans_job(device_ip: str, device_id: int):
     try:
@@ -308,6 +323,34 @@ def post_fetch_vlans_job(job,connection, result):
     #Update DB with new vlans
     apiut.update_device_vlans_db(device_id, vlan_list_diff)
 
+def set_trunk_interface_vlan_job(device_ip,interface_name,vlan_id):
+    try:
+        dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
+        dev.open()
+        cu = Config(dev)
+        commands = f"""
+        set interfaces {interface_name} unit 0 family ethernet-switching interface-mode trunk
+        set interfaces {interface_name} unit 0 family ethernet-switching vlan members {vlan_id}
+        """        
+        cu.load(commands,format="set")
+        cu.commit(comment=f"Automation: set interface mode {interface_name} to {interface_mode}")
+        dev.close()
+
+        return {
+            "status": "Success",
+            "interface_name": interface_name,
+            "interface_mode": interface_mode,
+            "job_type" : "set_trunk_interface_vlan",
+            "message": f"Interface {interface_name} successfully set to mode {interface_mode}."
+        }    
+    except Exception as e:
+        return {
+             "status": "Error",
+             "device_ip": device_ip,
+             "error": str(e)
+        }
+    
+    
 
 def set_interface_vlan_job(device_ip, interface, vlan_id):
     try:
@@ -318,6 +361,7 @@ def set_interface_vlan_job(device_ip, interface, vlan_id):
         #set and del command might look stupid but if the config stanza is not available
         #it returns a warning/error. We avoid it by this trick.
         commands = f"""
+        set interfaces {interface} unit 0 family ethernet-switching interface-mode access
         set interfaces {interface} unit 0 family ethernet-switching vlan members {vlan_id} 
         del interfaces {interface} unit 0 family ethernet-switching vlan 
         set interfaces {interface} unit 0 family ethernet-switching vlan members {vlan_id}
@@ -334,7 +378,7 @@ def set_interface_vlan_job(device_ip, interface, vlan_id):
             "vlan_id": vlan_id,
             "job_id": job_id
         }
-        r.publish("job_notifications", json.dumps(message))
+        #r.publish("job_notifications", json.dumps(message))
         
         return {
             "status": "Success",

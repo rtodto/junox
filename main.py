@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends
-from juniper_cfg.routers import device_routes,auth_routes,vlan_routes,other_routes
+from juniper_cfg.routers import auth_routes,device_routes,vlan_routes,other_routes,interface_routes
 from juniper_cfg.auth import get_current_user
 
 app = FastAPI()
@@ -14,6 +14,11 @@ app.include_router(
 )
 
 app.include_router(
+    interface_routes.router,
+    #dependencies=[Depends(get_current_user)]
+)
+
+app.include_router(
     vlan_routes.router,
     dependencies=[Depends(get_current_user)]
 )
@@ -22,3 +27,4 @@ app.include_router(
     other_routes.router,
     dependencies=[Depends(get_current_user)]
 )
+
