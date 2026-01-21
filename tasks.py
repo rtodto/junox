@@ -1,3 +1,4 @@
+from jnpr.junos.exception import RpcError
 from jnpr.junos import Device
 from jnpr.junos.utils.config import Config
 from fastapi import FastAPI,HTTPException, status
@@ -123,21 +124,45 @@ def get_switching_interfaces_job(device_id:int, device_ip: str):
     try:
         dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
         dev.open()
-        all_interfaces = dev.rpc.get_ethernet_switching_interface_details()
-        interfaces_result = []
-        for entry in all_interfaces.xpath('.//l2ng-l2ald-iff-interface-entry'):
-            interface_name = entry.findtext('l2iff-interface-name', default="N/A").strip()
-            interface_tagness = entry.findtext('l2iff-interface-vlan-member-tagness', default="N/A").strip()
-            if interface_name:
-              interfaces_result.append({
-                  "interface_name": interface_name.removesuffix(".0"),
-                  "interface_tagness": interface_tagness
-                
-            })     
+
+        try:
+            ##Junos 25.4R1.12(virtual EX)
+            all_interfaces = dev.rpc.get_ethernet_switching_interface_details()
+            interfaces_result = []
+            for entry in all_interfaces.xpath('.//l2ng-l2ald-iff-interface-entry'):
+                interface_name = entry.findtext('l2iff-interface-name', default="N/A").strip()
+                interface_tagness = entry.findtext('l2iff-interface-vlan-member-tagness', default="N/A").strip()
+                if interface_name:
+                    interfaces_result.append({
+                    "interface_name": interface_name.removesuffix(".0"),
+                    "interface_tagness": interface_tagness
+                    
+                })     
+        
+        except RpcError as e:
+            #Junos 12.3R6.6
+            all_interfaces = dev.rpc.get_ethernet_switching_interface_information()
+            interfaces_result = []
+            for entry in all_interfaces.xpath('.//interface'):
+                interface_name = entry.findtext('interface-name', default="N/A").strip()
+                vlan_members = entry.xpath('.//interface-vlan-member')
+                for member in vlan_members:
+                    tagness = member.findtext('interface-vlan-member-tagness')
+                    break #we only need once we don't fetch vlans here.
+                interface_tagness = tagness
+
+                if interface_name:
+                    interfaces_result.append({
+                    "interface_name": interface_name.removesuffix(".0"),
+                    "interface_tagness": interface_tagness
+                    
+                })    
 
         dev.close()
         #Update interface tagness in the database blindly. It is not costing much.
         apiut.update_db_interface_tagness(device_id,interfaces_result)
+
+        print(interfaces_result)
         
         return {"interfaces": interfaces_result}
     except Exception as e:
