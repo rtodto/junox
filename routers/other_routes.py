@@ -25,9 +25,11 @@ def get_job_status(job_id: str):
         
     if job.is_failed:
         return {
-            "job_id": job_id,
-            "status": "failed",
-            "error": str(job.exc_info)
+            "status": "error",
+            "data": {
+                "job_id": job_id,
+                "text": str(job.exc_info)
+            }
         }
         
     return {

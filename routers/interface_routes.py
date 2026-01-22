@@ -34,7 +34,7 @@ def get_interfaces(device_id: int,db: Session = Depends(get_db)):
     
     return {
         "job_id": job.get_id(),
-        "status": "Queued",
+        "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
 
@@ -51,7 +51,7 @@ def get_switching_interfaces(device_id: int,db: Session = Depends(get_db)):
     job = q.enqueue(get_switching_interfaces_job,device_id,device_ip) 
     return {
         "job_id": job.get_id(),
-        "status": "Queued",
+        "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
 

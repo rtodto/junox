@@ -51,7 +51,7 @@ def provision_device(device_hostname: str, db: Session = Depends(get_db)):
     job = q.enqueue(provision_device_job, device_ip) 
     return {
         "job_id": job.get_id(),
-        "status": "Queued",
+        "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
     }    
 
@@ -68,6 +68,6 @@ def fetch_mac_table(device_id: int, db: Session = Depends(get_db)):
     job = q.enqueue(fetch_mac_table_job, device_ip, device_id) 
     return {
         "job_id": job.get_id(),
-        "status": "Queued",
+        "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
     }

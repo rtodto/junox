@@ -1,3 +1,4 @@
+from sqlalchemy.sql._elements_constructors import null
 from fastapi import APIRouter,HTTPException, Depends
 from sqlalchemy.orm import Session
 from typing import List
@@ -16,6 +17,7 @@ router = APIRouter(
     tags=["vlans"]
 )
 
+
 @router.post("/create-vlan/{device_id}/{vlan_id}")
 def create_vlan(device_id: int, vlan_id: int, vlan_name: str, db: Session = Depends(get_db)):
   """
@@ -26,9 +28,32 @@ def create_vlan(device_id: int, vlan_id: int, vlan_name: str, db: Session = Depe
   job = q.enqueue(create_vlan_job,device_ip,vlan_id,vlan_name) 
   return {
         "job_id": job.get_id(),
-        "status": "Queued",
+        "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
+
+@router.get("/check_vlan/{device_id}/{vlan_id}")
+def check_vlan(device_id: int, vlan_id: int):
+    """
+    Checks existence of a vlan: check is done against the database
+    """
+    result = apiut.is_vlan_exist(device_id,vlan_id)
+
+    if result == None:
+       return { 
+           "status": "success",
+           "data" : {
+              "vlan_id" : vlan_id,
+              "text": "VLAN exists"
+           }
+           
+           }
+    else:
+        return { 
+           "status": "success",
+           "result": result
+           }
+
 
 @router.post("/assign-vlan/{device_id}/{vlan_id}")
 def set_access_interface_vlan(
@@ -40,12 +65,23 @@ def set_access_interface_vlan(
     """
     Redis job dispatcher to assign an interface to a specific vlan.
     """
+    
+    #Check if vlan exists if not return error don't create it
+    result = apiut.is_vlan_exist(device_id,vlan_id)
+    if result == None:
+        return {
+            "status": "error",
+            "data": {
+               "vlan_id": vlan_id,
+               "text": "VLAN does not exist"
+            }
+        }
 
     device_ip = apiut.device_id_to_ip(device_id)
     job = q.enqueue(set_interface_vlan_job,device_ip,interface_name,vlan_id) 
     return {
         "job_id": job.get_id(),
-        "status": "Queued",
+        "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
 
@@ -60,10 +96,21 @@ def set_trunk_interface_vlan(device_id: int, interface_name: str, vlan_id: int):
     
     device_ip = apiut.device_id_to_ip(device_id)
 
+    #Check if vlan exists if not return error don't create it
+    result = apiut.is_vlan_exist(device_id,vlan_id)
+    if result == None:
+        return {
+            "status": "error",
+            "data": {
+               "vlan_id": vlan_id,
+               "text": "VLAN does not exist"
+            }
+        }
+
     job = q.enqueue(set_trunk_interface_vlan_job,device_ip,interface_name,vlan_id) 
     return {
         "job_id": job.get_id(),
-        "status": "Queued",
+        "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
 
@@ -92,7 +139,7 @@ def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
 
     return {
         "job_id": job.get_id(),
-        "status": "Queued",
+        "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
     }
 

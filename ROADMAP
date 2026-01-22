@@ -1,0 +1,4 @@
+#FR001 List active end point devices connected to each port OUI etc.
+#FR002 record every device to an endpoint table with timestamps like device activity table.
+       need to find a way to record device in/out logs. 
+#FR003 scheduled jobs e.g interface bounce, device reboot, shutdown etc.

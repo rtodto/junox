@@ -1,3 +1,4 @@
+from .models import VLANs
 from sqlalchemy.sql._elements_constructors import bindparam
 from .models import EthInterfaces
 from .database import SessionLocal
@@ -28,6 +29,22 @@ class APIUtils:
             self.db.rollback()
             raise e
   
+    def is_vlan_exist(self,device_id: int, vlan_id: int):
+        """
+        Data comes from the API and we check the vlan id agains the DB
+        """
+        row = self.db.query(VLANs).filter(
+               VLANs.device_id==device_id,
+               VLANs.vlan_id==vlan_id
+               ).first()
+        
+        if row:
+            return row.vlan_id
+        else:
+            return None
+
+        
+
     def get_device_vlans(self, device_id: int):
         """
         We take device_id as input and we return the vlans of the device 
