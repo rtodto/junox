@@ -49,3 +49,8 @@ def refresh_token(refresh_token: str = Body(..., embed=True)):
         "access_token": new_access_token, 
         "token_type": "bearer"
     }
+
+@router.get("/ping")
+def ping(current_user: models.User = Depends(auth.get_current_user)):
+    return {"message": "pong"}
+    
