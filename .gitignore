@@ -1,6 +1,5 @@
 TODO
 INSTRUCTIONS
-FEATURES
 verify_changes.py
 socket_client.py
 check_redis_job.py
