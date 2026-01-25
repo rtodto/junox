@@ -18,8 +18,7 @@ router = APIRouter(
 
 @router.get("/", response_model=List[DeviceResponse])
 def get_devices(db: Session = Depends(get_db),
-                #current_user: models.User = Depends(auth.get_current_user)
-                ):
+                    current_user: models.User = Depends(auth.get_current_user)):
     """
     Returns the list of network devices from database
     """

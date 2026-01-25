@@ -28,6 +28,20 @@ class APIUtils:
         except Exception as e:
             self.db.rollback()
             raise e
+
+    
+    def get_interfaces_list(self, device_id: int):
+        """
+        We take device_id as input and we return the interfaces of the device 
+        """
+        device = self.db.query(EthInterfaces).filter(EthInterfaces.device_id==device_id).all()
+        #number of interfaces
+        num_interfaces = len(device)
+
+        if not device:
+            return None
+        
+        return device
   
     def is_vlan_exist(self,device_id: int, vlan_id: int):
         """

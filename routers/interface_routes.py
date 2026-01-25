@@ -16,7 +16,7 @@ router = APIRouter(
     tags=["Interfaces"]
 )
 
-@router.get("/{device_id}/interfaces")
+@router.get("/{device_id}/interfaces_job")
 #@cache(expire=120)
 def get_interfaces(device_id: int,db: Session = Depends(get_db)):
     """
@@ -36,6 +36,17 @@ def get_interfaces(device_id: int,db: Session = Depends(get_db)):
         "job_id": job.get_id(),
         "status": "queued",
         "monitor_url": f"/job/{job.get_id()}"
+    }
+
+@router.get("/{device_id}/interfaces_db")
+def get_interfaces_list(device_id: int,db: Session = Depends(get_db)):
+    """
+    Fetches the list of configured interfaces from the database. 
+    #show interfaces
+    """
+    interfaces = apiut.get_interfaces_list(device_id)
+    return {
+        "interfaces": interfaces,
     }
 
 @router.get("/switching_interfaces/{device_id}")
