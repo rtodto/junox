@@ -1,8 +1,6 @@
-from .models import VLANs
 from sqlalchemy.sql._elements_constructors import bindparam
-from .models import EthInterfaces
+from .models import *
 from .database import SessionLocal
-from .models import * 
 from sqlalchemy import update
 
 class APIUtils:
@@ -91,8 +89,7 @@ class APIUtils:
         and we update the existing interface list eth_interfaces
         interface_list = [{"interface_name": "ge-0/0/20", "interface_tagness": "tagged"}...]
         """
-        print("update db")
-        print(interface_list, device_id)
+
         for iface in interface_list:
             update_interface = (
                              update(EthInterfaces)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter,HTTPException, Depends
+from fastapi import APIRouter,HTTPException, Depends,Form
 from sqlalchemy.orm import Session
 from typing import List
 from juniper_cfg.database import get_db
@@ -37,7 +37,7 @@ def get_devices(db: Session = Depends(get_db),
 
 
 @router.post("/provision/{device_hostname}")
-def provision_device(device_hostname: str, db: Session = Depends(get_db)):
+def provision_device(device_hostname: str, username: str = Form(), password: str = Form(...), db: Session = Depends(get_db)):
     """
     We register a new device on the database and collect the facts from the device.
     """
@@ -47,7 +47,7 @@ def provision_device(device_hostname: str, db: Session = Depends(get_db)):
     else:
         device_ip = device_hostname
     
-    job = q.enqueue(provision_device_job, device_ip) 
+    job = q.enqueue(provision_device_job, device_ip, username, password) 
     return {
         "job_id": job.get_id(),
         "status": "queued",

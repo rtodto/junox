@@ -6,6 +6,8 @@ from juniper_cfg.database import get_db
 from juniper_cfg import auth, models
 from juniper_cfg.schemas import DeviceResponse
 from juniper_cfg.services import q,apiut,ut
+from juniper_cfg.dbutils import *
+from juniper_cfg.schemas import *
 
 #redis
 from redis import Redis
@@ -32,6 +34,9 @@ def create_vlan(device_id: int, vlan_id: int, vlan_name: str, db: Session = Depe
         "monitor_url": f"/job/{job.get_id()}"
     }
 
+
+
+
 @router.get("/check_vlan/{device_id}/{vlan_id}")
 def check_vlan(device_id: int, vlan_id: int):
     """
@@ -55,7 +60,7 @@ def check_vlan(device_id: int, vlan_id: int):
            }
 
 
-@router.post("/assign-vlan/{device_id}/{vlan_id}")
+@router.post("/access_vlan/{device_id}/{vlan_id}")
 def set_access_interface_vlan(
     device_id: int, 
     interface_name: str, 
@@ -65,7 +70,8 @@ def set_access_interface_vlan(
     """
     Redis job dispatcher to assign an interface to a specific vlan.
     """
-    
+
+
     #Check if vlan exists if not return error don't create it
     result = apiut.is_vlan_exist(device_id,vlan_id)
     if result == None:
@@ -116,7 +122,7 @@ def set_trunk_interface_vlan(device_id: int, interface_name: str, vlan_id: int):
 
 
 
-@router.get("/{device_id}/fetch-vlans")
+@router.get("/{device_id}/fetch_vlans_job")
 def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
     """
     Redis dispatcher: 
@@ -143,4 +149,40 @@ def fetch_vlans(device_id: int, db: Session = Depends(get_db)):
         "monitor_url": f"/job/{job.get_id()}"
     }
 
+@router.get("/{device_id}/fetch_vlans_db")
+def fetch_vlans_db(device_id: int, db: Session = Depends(get_db)):
+    """
+    Fetches vlans from the database.
+    """
+    vlans = apiut.get_device_vlans(device_id)
+    if not vlans:
+        raise HTTPException(status_code=404, detail="Vlans not found")
+    return vlans
+    
+@router.get("/get_vlan_catalog_db", response_model=List[VlanCatalogSchema])    
+def get_vlan_catalog_db(db: Session = Depends(get_db)):
+    """
+    Returns the full global pool of VLANs from the catalog.
+    """
 
+    catalog_vlans = db_get_all_vlan_catalog(db)
+
+    if not catalog_vlans:
+        raise HTTPException(status_code=404, detail="Vlans not found")
+    return catalog_vlans
+
+@router.post("/create_vlan_catalog", response_model=VlanCatalogSchema)
+def create_vlan_catalog(vlan_data: VlanCreate, db: Session = Depends(get_db)):
+    """
+    Creates a new VLAN in the catalog.
+    """
+    # 1. Check if VLAN ID already exists
+    existing = db.query(models.VlanCatalog).filter(models.VlanCatalog.vlan_id == vlan_data.vlan_id).first()
+    if existing:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"VLAN {vlan_data.vlan_id} already exists in the catalog."
+        )
+
+    # 2. Create the VLAN (The "Action")
+    return db_create_catalog_vlan(db,vlan_data)

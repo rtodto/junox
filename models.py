@@ -1,4 +1,4 @@
-from sqlalchemy import String, ForeignKey, Integer, BigInteger, Boolean,UniqueConstraint
+from sqlalchemy import String, ForeignKey, Integer, BigInteger, Boolean,UniqueConstraint,Column,Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 from typing import List
@@ -66,6 +66,15 @@ class VLANs(Base):
     vlan_name: Mapped[str] = mapped_column(String(50))
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
     device: Mapped["DeviceNet"] = relationship(back_populates="vlans")
+    
+class VlanCatalog(Base):
+    __tablename__ = "vlan_catalog"
+
+    id = Column(Integer, primary_key=True, index=True)
+    vlan_id = Column(Integer, unique=True, nullable=False, index=True) 
+    name = Column(String(50), nullable=False)                         
+    description = Column(Text, nullable=True)                         
+    category = Column(String(30), nullable=True)
 
 class ArpTable(Base):
     __tablename__ = "arp_table"

@@ -18,12 +18,12 @@ engine = create_engine(DATABASE_URL)
 # Each instance of SessionLocal will be a database session
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# 5. The Base class for your models
+# 5. The Base class for models
 # In SQLAlchemy 2.0+, we inherit from DeclarativeBase
 class Base(DeclarativeBase):
     pass
 
-# 6. Dependency for your FastAPI routes
+# 6. Dependency for FastAPI routes
 # This ensures the connection is closed after every API request
 def get_db():
     db = SessionLocal()

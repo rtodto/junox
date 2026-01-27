@@ -7,8 +7,9 @@ from juniper_cfg.schemas import DeviceResponse
 from juniper_cfg.services import q,apiut,ut
 
 #redis
-from redis import Redis
-from rq import Queue
+#from redis import Redis
+#from rq import Queue
+from rq.registry import StartedJobRegistry, FinishedJobRegistry, FailedJobRegistry, DeferredJobRegistry
 from juniper_cfg.tasks import *
 
 router = APIRouter(
@@ -37,3 +38,55 @@ def get_job_status(job_id: str):
         "status": job.get_status(),
         "result": job.result
     }
+
+@router.get("/jobs/all")
+def get_all_jobs():
+    """
+    Aggregates jobs from all RQ registries to provide a complete history.
+    """
+    all_jobs = []
+    
+    # 1. Define registries to check
+    registries = [
+        StartedJobRegistry(queue=q),
+        FinishedJobRegistry(queue=q),
+        FailedJobRegistry(queue=q),
+        DeferredJobRegistry(queue=q)
+    ]
+    
+    # 2. Get Job IDs from registries + the main queue
+    job_ids = set(q.job_ids) # Currently queued
+    for registry in registries:
+        job_ids.update(registry.get_job_ids())
+    
+    # 3. Fetch details for each job
+    for job_id in job_ids:
+        job = q.fetch_job(job_id)
+        if job:
+            # We determine a friendly status
+            status = job.get_status()
+            if status == "queued":
+                display_status = "running" # or "queued"
+            elif status == "started":
+                display_status = "running"
+            elif status == "finished":
+                display_status = "completed"
+            elif status == "failed":
+                display_status = "failed"
+            else:
+                display_status = status
+
+            all_jobs.append({
+                "id": job_id,
+                "task_type": job.func_name.split('.')[-1], # e.g., 'provision_device'
+                "target": job.args[0] if job.args else "N/A", # Assuming first arg is IP
+                "status": display_status,
+                "created_at": job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else "N/A",
+                "ended_at": job.ended_at.strftime('%Y-%m-%d %H:%M:%S') if job.ended_at else "N/A",
+                "result": job.result
+            })
+            
+    # Sort by creation time (newest first)
+    all_jobs.sort(key=lambda x: x['created_at'], reverse=True)
+    
+    return all_jobs

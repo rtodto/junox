@@ -116,7 +116,7 @@ def post_get_interfaces_job(job,connection, results):
       
 
 
-def get_switching_interfaces_job(device_id:int, device_ip: str):
+def get_switching_interfaces_job(device_ip: str, device_id:int):
     """
     Fetch switching interfaces from the live device. This is not show interface output.
     """
@@ -215,13 +215,13 @@ def fetch_mac_table_job(device_ip: str, device_id: int):
             dev.close()
 
 
-def provision_device_job(device_ip: str):
+def provision_device_job(device_ip: str, username: str, password: str):
     """
     This function provisions a device by fetching its facts and calls APIUtils.add_device_to_db.
     """
     try:
         # Use Juniper Device class (imported as Device)
-        dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
+        dev = Device(host=device_ip, user=username, password=password)
         dev.open()
      
         # Use our DB Model class (DeviceNet)
@@ -267,6 +267,7 @@ def fetch_vlans_job(device_ip: str, device_id: int):
         
         vlans_data = dev.rpc.get_vlan_information()
 
+        print(vlans_data)
         # Parse the XML into a Python List of Dictionaries
         results = []
         for entry in vlans_data.xpath('.//l2ng-l2ald-vlan-instance-group'):

@@ -59,7 +59,7 @@ def get_switching_interfaces(device_id: int,db: Session = Depends(get_db)):
     # Calculate IP here (sync)
     device_ip = apiut.device_id_to_ip(device_id)
 
-    job = q.enqueue(get_switching_interfaces_job,device_id,device_ip) 
+    job = q.enqueue(get_switching_interfaces_job,device_ip,device_id) 
     return {
         "job_id": job.get_id(),
         "status": "queued",
