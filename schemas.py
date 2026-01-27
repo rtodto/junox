@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional
+from typing import Optional,Any
 
 # This defines the JSON structure for the API response
 class DeviceResponse(BaseModel):
@@ -15,6 +15,26 @@ class DeviceResponse(BaseModel):
 
     class Config:
         from_attributes = True # Allows Pydantic to read SQLAlchemy objects
+
+class DeviceProvisionRequest(BaseModel):
+    # Field allows you to add extra validation or descriptions
+    username: str = Field(..., example="admin")
+    password: str = Field(..., example="Juniper123")
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: str
+    monitor_url: str
+
+    class Config:
+        from_attributes = True
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    result: Optional[Any] = None
+    error: Optional[str] = None
 
 
 class VlanCatalogBase(BaseModel):
@@ -32,3 +52,5 @@ class VlanCatalogSchema(VlanCatalogBase):
 # CREATE schema It inherits everything from Base
 class VlanCreate(VlanCatalogBase):
     pass
+
+

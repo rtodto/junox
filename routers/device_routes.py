@@ -1,9 +1,9 @@
-from fastapi import APIRouter,HTTPException, Depends,Form
+from fastapi import APIRouter,HTTPException,Depends,Form,Request
 from sqlalchemy.orm import Session
 from typing import List
 from juniper_cfg.database import get_db
 from juniper_cfg import auth, models
-from juniper_cfg.schemas import DeviceResponse
+from juniper_cfg.schemas import *
 from juniper_cfg.services import q,apiut,ut
 
 #redis
@@ -36,8 +36,17 @@ def get_devices(db: Session = Depends(get_db),
     return devices
 
 
-@router.post("/provision/{device_hostname}")
-def provision_device(device_hostname: str, username: str = Form(), password: str = Form(...), db: Session = Depends(get_db)):
+@router.post("/provision/{device_hostname}", 
+             response_model=JobResponse,
+             status_code=status.HTTP_202_ACCEPTED 
+             #This is a super cool response to my lovely Django. Hey baby, I got your request
+             #and working on it, super nice.
+)             
+def provision_device(device_hostname: str, 
+                    payload: DeviceProvisionRequest,
+                    request: Request,
+                    db: Session = Depends(get_db)
+                    ):
     """
     We register a new device on the database and collect the facts from the device.
     """
@@ -47,11 +56,13 @@ def provision_device(device_hostname: str, username: str = Form(), password: str
     else:
         device_ip = device_hostname
     
-    job = q.enqueue(provision_device_job, device_ip, username, password) 
+    job = q.enqueue(provision_device_job, device_ip, payload.username, payload.password) 
+    monitor_url = str(request.url_for("get_job_status", job_id=job.get_id()))
+
     return {
         "job_id": job.get_id(),
         "status": "queued",
-        "monitor_url": f"/job/{job.get_id()}"
+        "monitor_url": monitor_url
     }    
 
 @router.get("/{device_id}/mac-table")

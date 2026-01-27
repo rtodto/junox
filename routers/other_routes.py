@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from juniper_cfg.database import get_db
 from juniper_cfg import auth, models
-from juniper_cfg.schemas import DeviceResponse
+from juniper_cfg.schemas import *
 from juniper_cfg.services import q,apiut,ut
 
 #redis
@@ -17,27 +17,24 @@ router = APIRouter(
     tags=["other"]
 )
 
-
-@router.get("/job/{job_id}")
+@router.get("/job/{job_id}", response_model=JobStatusResponse, name="get_job_status")
 def get_job_status(job_id: str):
     job = q.fetch_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
         
-    if job.is_failed:
-        return {
-            "status": "error",
-            "data": {
-                "job_id": job_id,
-                "text": str(job.exc_info)
-            }
-        }
-        
-    return {
+    response_data = {
         "job_id": job_id,
-        "status": job.get_status(),
-        "result": job.result
+        "status": job.get_status(), # Returns 'queued', 'started', 'finished', or 'failed'
+        "result": job.result,
+        "error": None
     }
+    
+    if job.is_failed:
+        response_data["status"] = "error"
+        response_data["error"] = str(job.exc_info)
+        
+    return response_data
 
 @router.get("/jobs/all")
 def get_all_jobs():

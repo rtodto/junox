@@ -35,3 +35,16 @@ app.include_router(
     prefix="/api/v1"
 )
 
+# main.py
+
+@app.get("/health", include_in_schema=False)
+def health_check():
+    """
+    Public health check endpoint
+    """
+
+    return {
+        "status": "online",
+        "version": app.version,
+        "database": "connected" # Check DB health later
+    }
