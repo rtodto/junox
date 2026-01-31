@@ -19,6 +19,7 @@ from lxml import etree
 #An ugly import
 from sqlalchemy.dialects.postgresql import insert
 from juniper_cfg.database import *
+from juniper_cfg.services import *
 
 
 load_dotenv()
@@ -214,7 +215,7 @@ def fetch_mac_table_job(device_ip: str, device_id: int):
             dev.close()
 
 
-def provision_device_job(device_ip: str, username: str, password: str):
+def provision_device_job(device_ip: str, username: str, password: str, session_id=None):
     """
     This function provisions a device by fetching its facts and calls APIUtils.add_device_to_db.
     """
@@ -222,33 +223,38 @@ def provision_device_job(device_ip: str, username: str, password: str):
     # 1. Get the Job ID automatically from RQ
     job = get_current_job()
     job_id = job.id if job else "internal"
-    r.publish(f"logs_{job.id}", "--- Worker received the task. Connecting... ---")
     
-    
-    # 2. Define our "Shout" function
     def log_to_ws(message):
-        r.publish(f"logs_{job_id}", message)
-
-    # 3. Use it throughout your logic
-    log_to_ws(f"--- Initiating Task for {device_ip} ---")
+        channel = f"logs_{session_id}"
+        r.publish(channel, message)
     
-    # try:
-    #     log_to_ws("Step 1: Establishing SSH connection...")
-    #     # REPLACED '...' WITH ACTUAL LOGIC:
-    #     # connection = ConnectHandler(device_type='juniper', host=hostname, ...)
-        
-    #     log_to_ws("Step 2: Checking configuration lock...")
-    #     # result = connection.send_config_set(['set vlans test vlan-id 999'])
-        
-    #     log_to_ws("\x1b[32mStep 3: Commit confirmed.\x1b[0m")
-        
-    #     return {"status": "success", "msg": "Provisioned"}
-
-    # except Exception as e:
-    #     # Log the error to the terminal in Red
-    #     log_to_ws(f"\x1b[31mERROR: {str(e)}\x1b[0m")
-    #     raise e
+    # Check device connectivity
+    log_to_ws(f"--- Checking ICMP Connectivity ---")
     
+    if not svc_ping(device_ip):
+        log_to_ws(f"\x1b[31m---[FAILED] Not responding to ICMP ---\x1b[0m")
+        return {
+            "status": "Error",
+            "device_ip": device_ip,
+            "error": "Device is not reachable by ICMP"
+        }
+    else:
+        log_to_ws(f"\x1b[32m--- [OK] ICMP ---\x1b[0m")
+
+    
+    # Check device netconf connectivity
+    log_to_ws(f"--- Checking Netconf Connectivity ---")
+    
+    if not svc_check_netconf_connectivity(device_ip, username, password):
+        log_to_ws(f"\x1b[31m--- [FAILED] NETCONF ---\x1b[0m")
+        return {
+            "status": "Error",
+            "device_ip": device_ip,
+            "error": "Device is not reachable by NETCONF"
+        }
+    else:
+        log_to_ws(f"\x1b[32m ---[OK] NETCONF\x1b[0m")
+
     try:
         # Use Juniper Device class (imported as Device)
         log_to_ws("Step 1: Establishing SSH connection...")
@@ -275,10 +281,10 @@ def provision_device_job(device_ip: str, username: str, password: str):
             db_result = apiut.add_device_to_db(new_device)
             log_to_ws("Step 3: Device added to database.")
         except Exception as e:
-            log_to_ws(f"\x1b[31mERROR: {str(e)}\x1b[0m")
+            log_to_ws(f"\x1b[31m[ERROR] {str(e)}\x1b[0m")
             raise e
         
-        log_to_ws("\x1b[32mStep 4: Provisioning completed successfully.\x1b[0m")
+        log_to_ws("\x1b[32m[COMPLETED] Provisioning completed successfully.\x1b[0m")
         return {
             "status": "Success",
             "device_ip": device_ip,

@@ -13,3 +13,6 @@ SQLAlchemy==2.0.45
 #auth breaks without this version of bcrypt
 bcrypt==4.0.1
 
+
+#INSTALL THIS TOO asyncpg-0.31.0
+#pip install asyncpg

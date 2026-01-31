@@ -20,7 +20,7 @@ class DeviceProvisionRequest(BaseModel):
     # Field allows you to add extra validation or descriptions
     username: str = Field(..., example="admin")
     password: str = Field(..., example="Juniper123")
-
+    session_id: Optional[str] = None # I use this for websocket connection
 
 class JobResponse(BaseModel):
     job_id: str

@@ -8,7 +8,7 @@ import redis.asyncio as aioredis
 from fastapi import WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 import os
-from fastapi.middleware.cors import CORSMiddleware
+
 
 
 app = FastAPI(
@@ -55,7 +55,7 @@ def health_check():
     return {
         "status": "online",
         "version": app.version,
-        "database": "connected" # Check DB health later
+        "database": "connected" # Check DB health later, monitoring etc.
     }
 
 # WebSocket
@@ -63,41 +63,36 @@ load_dotenv()
 REDIS_HOST = os.getenv("REDIS_HOST")
 REDIS_PORT = os.getenv("REDIS_PORT")
 
-origins = [
-    "http://127.0.0.1:8001",
-    "http://localhost:8001",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 redis_client = aioredis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}", decode_responses=True)
 
-@app.websocket("/ws/logs/{job_id}")
-async def websocket_endpoint(websocket: WebSocket, job_id: str):
+@app.websocket("/ws/logs/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
+    key = f"logs_{session_id}"
     
-    # Use the async pubsub
-    async with redis_client.pubsub() as pubsub:
-        await pubsub.subscribe(f"logs_{job_id}")
-        await websocket.send_text("✔ Connected to Redis channel...")
-        
-        try:
+    try:
+        # 1. Immediate acknowledgement
+        await websocket.send_text("--- 📡 Established link to background worker ---")
+
+        # 2. Listen to Redis PubSub
+        async with redis_client.pubsub() as pubsub:
+            await pubsub.subscribe(key)
+            
             while True:
-                # Use get_message with a timeout to keep the loop responsive
+                # Listen for messages from the Worker
                 message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 
                 if message:
-                    await websocket.send_text(message["data"])
+                    data = message["data"]
+                    # Handle both byte and string data safely
+                    decoded_data = data.decode('utf-8') if isinstance(data, bytes) else data
+                    await websocket.send_text(decoded_data)
                 
-                # Check if the websocket is still alive
+                # Keep the connection alive and loop responsive
                 await asyncio.sleep(0.01)
-        except WebSocketDisconnect:
-            print(f"Client disconnected from job {job_id}")
-        except Exception as e:
-            await websocket.send_text(f"Error: {str(e)}")
+
+    except WebSocketDisconnect:
+        print(f"User closed session {session_id}")
+    except Exception as e:
+        print(f"WebSocket Error: {e}")
