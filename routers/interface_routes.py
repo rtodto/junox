@@ -5,12 +5,13 @@ from typing import List
 from juniper_cfg.database import get_db
 from juniper_cfg import auth, models
 from juniper_cfg.schemas import DeviceResponse
-from juniper_cfg.services import q,apiut,ut
+from juniper_cfg.services import *
 
 #redis
 from redis import Redis
 from rq import Queue
 from juniper_cfg.tasks import *
+from rq.job import Job
 
 router = APIRouter(
     prefix="/interfaces",
@@ -26,23 +27,24 @@ async def get_interfaces(
     Fetches the list of configured interfaces (Non-blocking dispatcher).
     """
     # 1. Use our async helper to fetch the IP
-    device_ip = await svc_get_device_ip_by_id_async(db, device_id)
+    #device_ip = await svc_get_device_ip_by_id_async(db, device_id)
     
-    if not device_ip:
-         raise HTTPException(status_code=404, detail="Device not found")
+    #if not device_ip:
+    #     raise HTTPException(status_code=404, detail="Device not found")
 
     # 2. Enqueue the worker job
     # We keep the 'on_success' callback logic as is
-    job = q.enqueue(
+    job = Job.create(
         get_interfaces_job, 
-        device_ip, 
-        device_id,
-        on_success=post_get_interfaces_job
+        args=(device_id),
+        connection=system_q.connection,
     )
     
     # 3. Handle Metadata
     job.meta["device_id"] = device_id
     job.save_meta()
+    # 4. Enqueue the job as we saved the metadata
+    q.enqueue_job(job)
     
     return {
         "job_id": job.get_id(),

@@ -1,7 +1,7 @@
 from sqlalchemy.sql._elements_constructors import bindparam
 from .models import *
 from .database import *
-from sqlalchemy import update
+from sqlalchemy import update,select
 from sqlalchemy.orm import Session
 from .schemas import *
 
@@ -19,7 +19,7 @@ async def db_get_all_vlan_catalog_async(db: AsyncSessionLocal):
     return result.scalars().all()
 
 
-async def db_create_catalog_vlan_async(db: AsyncSession, vlan_data: VlanCreate):
+async def db_create_catalog_vlan_async(db: AsyncSessionLocal, vlan_data: VlanCreate):
     """
     Add a new standard VLAN to the Source of Truth asynchronously.
     """

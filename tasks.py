@@ -1,9 +1,11 @@
+from juniper_cfg.services import svc_update_db_interface_tagness
 from jnpr.junos.exception import RpcError
 from jnpr.junos import Device
 from jnpr.junos.utils.config import Config
 from fastapi import FastAPI,HTTPException, status
 import redis
 from rq import get_current_job
+from rq.job import Job
 import json
 from juniper_cfg import apiutils
 import logging
@@ -40,12 +42,22 @@ logging.basicConfig(level=LOG_LEVEL,
 logger = logging.getLogger("RedisJobs")
 
 
-def get_interfaces_job(device_ip: str, device_id: int):
+def get_interfaces_job(device_id: int):
     """
     Fetch interface list from the live device. This is show interface output.
     We are interested in the interfaces that are up and running, mac address, description, admin status, oper status.
     However this doesn't include the L3 interfaces.
     """
+
+    device_ip = svc_get_device_ip_by_id_sync(device_id)
+    current_job = get_current_job()
+    session_id = current_job.meta.get("session_id")
+    run_chain = current_job.meta.get("run_chain")
+
+    def log_to_ws(message):
+        channel = f"logs_{session_id}"
+        r.publish(channel, message)
+    
     try:
         dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
         dev.open()
@@ -53,8 +65,23 @@ def get_interfaces_job(device_ip: str, device_id: int):
         ports.get()
         dev.close()
         results = ports.items()
-
+        
+        if results and current_job and run_chain:
+          new_job = Job.create(
+            func=post_get_interfaces_job,
+            args=(device_id,results,),
+            connection=current_job.connection,
+          )
+          new_job.meta = {
+              "session_id": session_id,
+              "run_chain": run_chain
+          }
+          new_job.save_meta()
+          new_job.save()
+          system_q.enqueue_job(new_job)
+            
         return {"interface_list": results}
+    
 
     except Exception as e:
         return {
@@ -63,35 +90,41 @@ def get_interfaces_job(device_ip: str, device_id: int):
              "error": str(e)
         }
 
-def post_get_interfaces_job(job,connection, results):
+def post_get_interfaces_job(device_id,results):
     """
-    By using PostgreSQL UPSERT method, we push what we get to the DB
+    Synchronizes interfaces to DB after a successful fetch
     """
-    
-    device_id = job.meta["device_id"]
+    current_job = get_current_job()
+    interface_raw_data = results
+    session_id = current_job.meta.get("session_id")
+    run_chain = current_job.meta.get("run_chain")
+
+
+
+    if not interface_raw_data:
+        return "No interfaces found to sync" 
+
     data_to_upsert = []
-    for interface in results['interface_list']:
-      
-      interface_name = interface[0]
-      interface_dict = dict(interface[1])
-      
-      data_to_upsert.append({
-        "device_id": device_id,
-        "interface_name": interface_name,
-        "oper_status": interface_dict.get('oper'),
-        "admin_status": interface_dict.get('admin'),
-        "description": interface_dict.get('description'),
-        "mac_address": interface_dict.get('macaddr')
-      })
-      if not data_to_upsert:
-        return 
-      
-      with SessionLocal() as session:
+    for interface in interface_raw_data:
+        # interface[0] is the name, interface[1] is the dict of attributes
+        iface_name = interface[0]
+        iface_details = dict(interface[1])
+        
+        data_to_upsert.append({
+            "device_id": device_id,
+            "interface_name": iface_name,
+            "oper_status": iface_details.get('oper'),
+            "admin_status": iface_details.get('admin'),
+            "description": iface_details.get('description'),
+            "mac_address": iface_details.get('macaddr')
+        })
+
+    # Move the DB session OUTSIDE the loop for efficiency
+    with SessionLocal() as session:
         try:
-            # Create the base insert statement
             stmt = insert(models.EthInterfaces).values(data_to_upsert)
 
-            # Add the PostgreSQL "Upsert" logic
+            # PostgreSQL UPSERT logic
             upsert_stmt = stmt.on_conflict_do_update(
                 constraint="uq_device_interface",
                 set_={
@@ -99,22 +132,26 @@ def post_get_interfaces_job(job,connection, results):
                     "admin_status": stmt.excluded.admin_status,
                     "description": stmt.excluded.description,
                     "mac_address": stmt.excluded.mac_address,
-                    #"interface_tagness": stmt.excluded.interface_tagness,
                 }
             )
 
             session.execute(upsert_stmt)
             session.commit()
-            print(f"Successfully synced {len(data_to_upsert)} interfaces for device {device_id}")
-            
+
+            if run_chain and session_id:
+                def log_to_ws(message):
+                    channel = f"logs_{session_id}"
+                    r.publish(channel, message)
+                    
+                log_to_ws("Step 5: Interfaces synced to DB ---")
+                log_to_ws(f"\x1b[32m--- [COMPLETED] Provisioning completed ---\x1b[0m")
+
         except Exception as e:
             session.rollback()
-            print(f"Failed to sync: {e}")
+            log_to_ws(f"DATABASE ERROR during sync: {e}")
             raise
       
     
-      
-
 
 def get_switching_interfaces_job(device_ip: str, device_id:int):
     """
@@ -160,9 +197,7 @@ def get_switching_interfaces_job(device_ip: str, device_id:int):
 
         dev.close()
         #Update interface tagness in the database blindly. It is not costing much.
-        apiut.update_db_interface_tagness(device_id,interfaces_result)
-
-        print(interfaces_result)
+        svc_update_db_interface_tagness(db, device_id,interfaces_result)
         
         return {"interfaces": interfaces_result}
     except Exception as e:
@@ -217,11 +252,13 @@ def fetch_mac_table_job(device_ip: str, device_id: int):
 
 def provision_device_job(device_ip: str, username: str, password: str, session_id=None):
     """
-    This function provisions a device by fetching its facts and calls APIUtils.add_device_to_db.
+    This function provisions a device by fetching its facts and returns device_id.
+    device_id is used in the chain to call other jobs.
     """
 
     # 1. Get the Job ID automatically from RQ
     job = get_current_job()
+    run_chain = job.meta.get("run_chain", False)
     job_id = job.id if job else "internal"
     
     def log_to_ws(message):
@@ -281,21 +318,29 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
             db_result = apiut.add_device_to_db(new_device)
             device_id = db_result.id
             if db_result:
-                log_to_ws("Step 3: Device added to database.") 
+                log_to_ws("Step 3: Device added to database.")
+                if run_chain: #because we can call this function from endpoint or from another job
+                    log_to_ws("Step 4: Device interfaces are being fetched, please wait...")
+                    
+                    new_job = Job.create(
+                        func=get_interfaces_job,
+                        args=(int(device_id),),
+                        connection=system_q.connection
+                    )
+                    new_job.meta["run_chain"] = True
+                    new_job.meta["session_id"] = session_id
+                    new_job.save_meta()
+
+                    system_q.enqueue_job(new_job)
             else:
                 log_to_ws("Step 3: Device not added to database.")
         except Exception as e:
             log_to_ws(f"\x1b[31m[ERROR] {str(e)}\x1b[0m")
             raise e
         
-        log_to_ws("\x1b[32m[COMPLETED] Provisioning completed successfully.\x1b[0m")
-        return {
-            "status": "Success",
-            "device_id": device_id,
-            "device_ip": device_ip,
-            "job_type" : "provision_device",
-            "message": f"Device {device_ip} successfully provisioned."
-        }    
+        #log_to_ws("\x1b[32m[COMPLETED] Provisioning completed successfully.\x1b[0m")
+        return device_id
+
     except Exception as e:
         return {
              "status": "Error",

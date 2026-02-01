@@ -11,6 +11,7 @@ from juniper_cfg.services import *
 #redis
 from redis import Redis
 from rq import Queue
+from rq.job import Job
 from juniper_cfg.tasks import *
 
 router = APIRouter(
@@ -78,13 +79,17 @@ async def provision_device(device_hostname: str,
         raise HTTPException(status_code=400, detail="Device already exists")
     
 
-    job = q.enqueue(provision_device_job,device_ip,payload.username,payload.password,session_id) 
+    job = Job.create(
+        provision_device_job, 
+        args=(device_ip,payload.username,payload.password,session_id),
+        connection=system_q.connection,
+    )
     
-    #if job is successful, enqueue dependent job to get switching interfaces
-    
-    #job_2 = system_q.enqueue_dependent(job, get_switching_interfaces_job, args=(device_ip, device_id))
-
+    job.meta["run_chain"] = True #By this we inform other jobs in the chain that req is from endpoint. 
+    job.save_meta()
+    system_q.enqueue_job(job)
     job_id = job.get_id()
+
     monitor_url = str(request.url_for("get_job_status", job_id=job_id))
     
     if session_channel:
@@ -116,22 +121,6 @@ async def fetch_mac_table(
         "monitor_url": f"/job/{job.get_id()}"
     }
 
-# @router.get("/{device_id}/mac-table")
-# def fetch_mac_table(device_id: int, db: Session = Depends(get_db)):
-#     """
-#     Redis dispatcher to fetch mac table
-#     """
-#     # Calculate IP here (sync)
-#     device_ip = apiut.device_id_to_ip(device_id)
-#     if not device_ip:
-#          raise HTTPException(status_code=404, detail="Device not found")
-
-#     job = q.enqueue(fetch_mac_table_job, device_ip, device_id) 
-#     return {
-#         "job_id": job.get_id(),
-#         "status": "queued",
-#         "monitor_url": f"/job/{job.get_id()}"
-#     }
 
 
 @router.get("/inventory/stats")

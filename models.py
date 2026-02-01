@@ -19,6 +19,7 @@ class DeviceNet(Base):
     sync_status: Mapped[str] = mapped_column(String(20), server_default="pending", nullable=False)
     last_synced: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
+ 
     # Relationships with Cascading Deletes
     mac_entries: Mapped[List["MacTable"]] = relationship(
         back_populates="device", cascade="all, delete-orphan"
