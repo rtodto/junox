@@ -10,7 +10,7 @@ class DeviceResponse(BaseModel):
     type: str
     os_version: str
     model: str
-    brand: str
+    vendor: str
     serialnumber: str
 
     class Config:

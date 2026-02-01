@@ -239,7 +239,7 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
             "error": "Device is not reachable by ICMP"
         }
     else:
-        log_to_ws(f"\x1b[32m--- [OK] ICMP ---\x1b[0m")
+        log_to_ws(f"\x1b[32m--- ICMP [OK] ---\x1b[0m")
 
     
     # Check device netconf connectivity
@@ -253,7 +253,7 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
             "error": "Device is not reachable by NETCONF"
         }
     else:
-        log_to_ws(f"\x1b[32m ---[OK] NETCONF\x1b[0m")
+        log_to_ws(f"\x1b[32m--- NETCONF [OK] ---\x1b[0m")
 
     try:
         # Use Juniper Device class (imported as Device)
@@ -269,7 +269,7 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
             type="switch",           
             os_version=dev.facts['version'], 
             model=dev.facts['model'],           
-            brand="NA",
+            vendor="NA",
             serialnumber=dev.facts['serialnumber'] # Note: fixed typo from serial_number to serialnumber based on models.py
         )
         logger.info(f"Provisioned device {device_ip}")
@@ -279,7 +279,11 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
         #Dispatch the job to util function
         try:
             db_result = apiut.add_device_to_db(new_device)
-            log_to_ws("Step 3: Device added to database.")
+            device_id = db_result.id
+            if db_result:
+                log_to_ws("Step 3: Device added to database.") 
+            else:
+                log_to_ws("Step 3: Device not added to database.")
         except Exception as e:
             log_to_ws(f"\x1b[31m[ERROR] {str(e)}\x1b[0m")
             raise e
@@ -287,6 +291,7 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
         log_to_ws("\x1b[32m[COMPLETED] Provisioning completed successfully.\x1b[0m")
         return {
             "status": "Success",
+            "device_id": device_id,
             "device_ip": device_ip,
             "job_type" : "provision_device",
             "message": f"Device {device_ip} successfully provisioned."

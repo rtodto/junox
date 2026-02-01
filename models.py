@@ -1,7 +1,8 @@
-from sqlalchemy import String, ForeignKey, Integer, BigInteger, Boolean,UniqueConstraint,Column,Text
+from sqlalchemy import DateTime, String, ForeignKey, Integer, BigInteger, Boolean,UniqueConstraint,Column,Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 from typing import List
+from datetime import datetime
 
 class DeviceNet(Base):
     __tablename__ = "devices"
@@ -13,8 +14,10 @@ class DeviceNet(Base):
     type:  Mapped[str] = mapped_column(String(20)) #switch,router,firewall etc
     os_version: Mapped[str] = mapped_column(String(20))
     model: Mapped[str] = mapped_column(String(20))
-    brand: Mapped[str] = mapped_column(String(20)) #cisco, juniper, paloalto etc
+    vendor: Mapped[str] = mapped_column(String(20), nullable=False, server_default="Generic") #cisco, juniper, paloalto etc
     serialnumber: Mapped[str] = mapped_column(String(20) , nullable=False ,server_default="XXXXXX")
+    sync_status: Mapped[str] = mapped_column(String(20), server_default="pending", nullable=False)
+    last_synced: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
     # Relationships with Cascading Deletes
     mac_entries: Mapped[List["MacTable"]] = relationship(

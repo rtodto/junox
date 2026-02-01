@@ -22,6 +22,8 @@ class APIUtils:
         try:
             self.db.add(device)
             self.db.commit()
+            #refresh the device to get the id
+            self.db.refresh(device)
             return device
         except Exception as e:
             self.db.rollback()
