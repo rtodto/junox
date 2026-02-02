@@ -41,6 +41,12 @@ logging.basicConfig(level=LOG_LEVEL,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("RedisJobs")
 
+def log_to_ws(session_id, ws_message):
+    """
+    Publishes a message to the WebSocket for a specific session.
+    """
+    channel = f"logs_{session_id}"
+    r.publish(channel, ws_message)
 
 def get_interfaces_job(device_id: int):
     """
@@ -53,10 +59,6 @@ def get_interfaces_job(device_id: int):
     current_job = get_current_job()
     session_id = current_job.meta.get("session_id")
     run_chain = current_job.meta.get("run_chain")
-
-    def log_to_ws(message):
-        channel = f"logs_{session_id}"
-        r.publish(channel, message)
     
     try:
         dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
@@ -139,16 +141,26 @@ def post_get_interfaces_job(device_id,results):
             session.commit()
 
             if run_chain and session_id:
-                def log_to_ws(message):
-                    channel = f"logs_{session_id}"
-                    r.publish(channel, message)
-                    
-                log_to_ws("Step 5: Interfaces synced to DB ---")
-                log_to_ws(f"\x1b[32m--- [COMPLETED] Provisioning completed ---\x1b[0m")
+                
+                log_to_ws(session_id, "Step 5: Interfaces synced to DB ---")
+                #Now time to collect VLAN information from the device
+                new_job = Job.create(
+                    func=fetch_vlans_job,
+                    args=(device_id,),
+                    connection=current_job.connection,
+                )
+                new_job.meta = {
+                    "session_id": session_id,
+                    "run_chain": run_chain
+                }
+                new_job.save_meta()
+                new_job.save()
+                system_q.enqueue_job(new_job)
+                
 
         except Exception as e:
             session.rollback()
-            log_to_ws(f"DATABASE ERROR during sync: {e}")
+            log_to_ws(session_id, f"DATABASE ERROR during sync: {e}")
             raise
       
     
@@ -260,41 +272,37 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
     job = get_current_job()
     run_chain = job.meta.get("run_chain", False)
     job_id = job.id if job else "internal"
-    
-    def log_to_ws(message):
-        channel = f"logs_{session_id}"
-        r.publish(channel, message)
-    
+    session_id = job.meta.get("session_id")
     # Check device connectivity
-    log_to_ws(f"--- Checking ICMP Connectivity ---")
+    log_to_ws(session_id, f"--- Checking ICMP Connectivity ---")
     
     if not svc_ping(device_ip):
-        log_to_ws(f"\x1b[31m---[FAILED] Not responding to ICMP ---\x1b[0m")
+        log_to_ws(session_id, f"\x1b[31m---[FAILED] Not responding to ICMP ---\x1b[0m")
         return {
             "status": "Error",
             "device_ip": device_ip,
             "error": "Device is not reachable by ICMP"
         }
     else:
-        log_to_ws(f"\x1b[32m--- ICMP [OK] ---\x1b[0m")
+        log_to_ws(session_id, f"\x1b[32m--- ICMP [OK] ---\x1b[0m")
 
     
     # Check device netconf connectivity
-    log_to_ws(f"--- Checking Netconf Connectivity ---")
+    log_to_ws(session_id, f"--- Checking Netconf Connectivity ---")
     
     if not svc_check_netconf_connectivity(device_ip, username, password):
-        log_to_ws(f"\x1b[31m--- [FAILED] NETCONF ---\x1b[0m")
+        log_to_ws(session_id, f"\x1b[31m--- [FAILED] NETCONF ---\x1b[0m")
         return {
             "status": "Error",
             "device_ip": device_ip,
             "error": "Device is not reachable by NETCONF"
         }
     else:
-        log_to_ws(f"\x1b[32m--- NETCONF [OK] ---\x1b[0m")
+        log_to_ws(session_id, f"\x1b[32m--- NETCONF [OK] ---\x1b[0m")
 
     try:
         # Use Juniper Device class (imported as Device)
-        log_to_ws("Step 1: Establishing SSH connection...")
+        log_to_ws(session_id, "Step 1: Establishing SSH connection...")
         dev = Device(host=device_ip, user=username, password=password)
         dev.open()
      
@@ -312,15 +320,15 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
         logger.info(f"Provisioned device {device_ip}")
         
         dev.close()
-        log_to_ws("Step 2: Connection Successful.")
+        log_to_ws(session_id, "Step 2: Connection Successful.")
         #Dispatch the job to util function
         try:
             db_result = apiut.add_device_to_db(new_device)
             device_id = db_result.id
             if db_result:
-                log_to_ws("Step 3: Device added to database.")
+                log_to_ws(session_id, "Step 3: Device added to database.")
                 if run_chain: #because we can call this function from endpoint or from another job
-                    log_to_ws("Step 4: Device interfaces are being fetched, please wait...")
+                    log_to_ws(session_id, "Step 4: Device interfaces are being fetched, please wait...")
                     
                     new_job = Job.create(
                         func=get_interfaces_job,
@@ -333,12 +341,12 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
 
                     system_q.enqueue_job(new_job)
             else:
-                log_to_ws("Step 3: Device not added to database.")
+                log_to_ws(session_id, "Step 3: Device not added to database.")
         except Exception as e:
-            log_to_ws(f"\x1b[31m[ERROR] {str(e)}\x1b[0m")
+            log_to_ws(session_id, f"\x1b[31m[ERROR] {str(e)}\x1b[0m")
             raise e
         
-        #log_to_ws("\x1b[32m[COMPLETED] Provisioning completed successfully.\x1b[0m")
+        #log_to_ws(session_id, "\x1b[32m[COMPLETED] Provisioning completed successfully.\x1b[0m")
         return device_id
 
     except Exception as e:
@@ -352,14 +360,18 @@ def provision_device_job(device_ip: str, username: str, password: str, session_i
         if dev:
             dev.close()
 
-def fetch_vlans_job(device_ip: str, device_id: int):
+def fetch_vlans_job(device_id: int):
+    """
+    RQ TASK: Fetches the list of configured vlans from the device.
+    """
+    device_ip = svc_get_device_ip_by_id_sync(device_id)
     try:
         dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
         dev.open()
         
         vlans_data = dev.rpc.get_vlan_information()
 
-        print(vlans_data)
+        
         # Parse the XML into a Python List of Dictionaries
         results = []
         for entry in vlans_data.xpath('.//l2ng-l2ald-vlan-instance-group'):
@@ -372,13 +384,41 @@ def fetch_vlans_job(device_ip: str, device_id: int):
         dev.close()
 
         #redis job id that is created for this task
-        job_id = get_current_job().id 
+        current_job = get_current_job()
+        job_id = current_job.id 
         message = {
             "job_type": "fetch_vlans",
             "job_id": job_id,
             "device_id": device_id
         }
-        r.publish("job_notifications", json.dumps(message)) 
+
+        session_id = current_job.meta.get("session_id")
+        run_chain = current_job.meta.get("run_chain")   
+        if results:
+            ws_message = f"Step 6: VLANs fetched successfully from the device"
+            log_to_ws(session_id, ws_message) 
+            #now time to sync the vlans to DB
+            new_job = Job.create(
+                func=post_fetch_vlans_job,
+                args=(device_id,results,),
+                connection=current_job.connection,
+            )
+            new_job.meta = {
+                "session_id": session_id,
+                "run_chain": run_chain
+            }
+            new_job.save_meta()
+            new_job.save()
+            system_q.enqueue_job(new_job)
+
+        else:
+            ws_message = f"Step 6: VLANs fetching FAILED."
+            log_to_ws(session_id, ws_message)
+            return {
+                "status": "Error",
+                "device_id": device_id,
+                "error": "VLANs fetching FAILED."
+            }
 
         return {
             "status": "Success",
@@ -397,7 +437,7 @@ def fetch_vlans_job(device_ip: str, device_id: int):
 
 
 
-def post_fetch_vlans_job(job,connection, result):
+def post_fetch_vlans_job(device_id,results):
     """
     This function is called after the fetch_vlans_job is completed.
     It processes the results of the fetch_vlans_job and updates the database. 
@@ -406,12 +446,12 @@ def post_fetch_vlans_job(job,connection, result):
     We only add vlans to the device if they are not in the device. We can add a manual force-sync or diff 
     calculator to give more control to the user.
     """
+    device_ip = svc_get_device_ip_by_id_sync(device_id)
 
-    device_id = job.meta["device_id"]
     logger.info("!!!!!POST RUN AFTER FETCH VLANS JOB!!!!!")
     #[{'vlan_id': '100', 'vlan_name': 'auto-vlan'}, {'vlan_id': '1000', 'vlan_name': 'auto-vlan-1000'}
     #we get this from the fetch_vlans_job: vlan id is string so we convert it to int
-    live_vlan_list = result['vlans']
+    live_vlan_list = results
     live_vlan_map = {int(vlan['vlan_id']): vlan.get('vlan_name', 'auto-vlan-{}'.format(vlan['vlan_id'])) for vlan in live_vlan_list}
     
     #Get all vlans from DB. Result is a list of dictionaries.
@@ -439,7 +479,15 @@ def post_fetch_vlans_job(job,connection, result):
 
 
     #Update DB with new vlans
-    apiut.update_device_vlans_db(device_id, vlan_list_diff)
+    update_db = apiut.update_device_vlans_db(device_id, vlan_list_diff)
+    current_job = get_current_job()
+    session_id = current_job.meta.get("session_id")
+    run_chain = current_job.meta.get("run_chain")
+    if update_db and run_chain:
+        log_to_ws(session_id, "Step 7: VLANs updated in database.")
+        log_to_ws(session_id, f"\x1b[32m--- [COMPLETED] Provisioning completed ---\x1b[0m")
+    else:
+        log_to_ws(session_id, "Step 7: VLANs update FAILED.")
 
 def set_trunk_interface_vlan_job(device_ip,interface_name,vlan_id):
     try:
