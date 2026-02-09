@@ -18,8 +18,10 @@ class DeviceNet(Base):
     serialnumber: Mapped[str] = mapped_column(String(20) , nullable=False ,server_default="XXXXXX")
     sync_status: Mapped[str] = mapped_column(String(20), server_default="pending", nullable=False)
     last_synced: Mapped[datetime] = mapped_column(DateTime, nullable=True)
-
+    region: Mapped[str] = mapped_column(String(15), nullable=False,server_default="region")
+    site: Mapped[str] = mapped_column(String(15), nullable=False,server_default="site")
  
+
     # Relationships with Cascading Deletes
     mac_entries: Mapped[List["MacTable"]] = relationship(
         back_populates="device", cascade="all, delete-orphan"

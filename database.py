@@ -1,19 +1,23 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession # New imports
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from dotenv import load_dotenv
 from typing import AsyncGenerator
 
-# 1. Load your .env file
 load_dotenv()
 
-# 2. Get the connection string from environment variables
-# Format: postgresql://user:password@localhost:5432/db_name
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# --- EXISTING SYNC SETUP (Don't touch this) ---
-engine = create_engine(DATABASE_URL)
+# --- SYNC SETUP WITH POOLING (For your RQ Workers) ---
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=10,           # Keep 10 connections open at all times
+    max_overflow=20,        # If all 10 are busy, allow up to 20 temporary extra ones
+    pool_timeout=30,        # Wait 30 seconds for a connection before failing
+    pool_recycle=1800,      # Recycle connections older than 30 mins (prevents stale links)
+    pool_pre_ping=True      # Check if the connection is alive before using it (VITAL)
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
@@ -21,13 +25,19 @@ def get_db():
     try:
         yield db
     finally:
+        # In a pool, .close() just puts the connection back in the 'parking lot'
         db.close()
 
-# --- NEW ASYNC SETUP (For Dashboard/High Performance) ---
-# We transform 'postgresql://' to 'postgresql+asyncpg://' for the async engine
+# --- ASYNC SETUP WITH POOLING (For your FastAPI Endpoints) ---
 ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
 
-async_engine = create_async_engine(ASYNC_DATABASE_URL, echo=False)
+async_engine = create_async_engine(
+    ASYNC_DATABASE_URL, 
+    echo=False,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True
+)
 AsyncSessionLocal = async_sessionmaker(
     bind=async_engine, 
     class_=AsyncSession, 
@@ -41,6 +51,5 @@ async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
         finally:
             await db.close()
 
-# --- SHARED BASE ---
 class Base(DeclarativeBase):
     pass

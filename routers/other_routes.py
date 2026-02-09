@@ -1,4 +1,4 @@
-from fastapi import APIRouter,HTTPException, Depends
+from fastapi import APIRouter,HTTPException, Depends,Header
 from sqlalchemy.orm import Session
 from typing import List
 from juniper_cfg.database import get_db
@@ -16,6 +16,28 @@ router = APIRouter(
     prefix="/other",
     tags=["other"]
 )
+
+
+# In production, move this to an environment variable (.env)
+EDA_API_KEY = "lab123"
+
+async def verify_eda_token(x_api_key: str = Header(...)):
+    """
+    Dependency that checks if the request has the correct API Key.
+    """
+    if x_api_key != EDA_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return x_api_key
+
+@router.post("/webhooks/eda-dispatch", dependencies=[Depends(verify_eda_token)])
+async def eda_dispatcher(payload: dict):
+    # This code only runs if verify_eda_token succeeds
+    task_type = payload.get("task_type")
+    device_ip = payload.get("device_ip")
+    
+    # ... your existing dispatcher logic ...
+    return {"status": "success"}
+
 
 @router.get("/job/{job_id}", response_model=JobStatusResponse, name="get_job_status")
 async def get_job_status(job_id: str):
@@ -97,3 +119,4 @@ async def get_all_jobs():
     all_jobs.sort(key=lambda x: x['created_at'], reverse=True)
     
     return all_jobs
+

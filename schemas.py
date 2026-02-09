@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional,Any
-
+from datetime import datetime
 # This defines the JSON structure for the API response
 class DeviceResponse(BaseModel):
     id: int
@@ -12,6 +12,10 @@ class DeviceResponse(BaseModel):
     model: str
     vendor: str
     serialnumber: str
+    region: str
+    site: str
+    sync_status: str
+    last_synced: Optional[datetime] = None
 
     class Config:
         from_attributes = True # Allows Pydantic to read SQLAlchemy objects

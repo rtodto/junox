@@ -58,7 +58,7 @@ def get_interfaces_job(device_id: int):
     device_ip = svc_get_device_ip_by_id_sync(device_id)
     current_job = get_current_job()
     session_id = current_job.meta.get("session_id")
-    run_chain = current_job.meta.get("run_chain")
+    run_chain = current_job.meta.get("run_chain",False)
     
     try:
         dev = Device(host=device_ip, user=DEVICE_USER, password=DEVICE_PASSWORD)
@@ -92,14 +92,26 @@ def get_interfaces_job(device_id: int):
              "error": str(e)
         }
 
-def post_get_interfaces_job(device_id,results):
+def post_get_interfaces_job(device_id,results=None,previous_job_id=None):
     """
     Synchronizes interfaces to DB after a successful fetch
+    Hence this function requires the results from the get_interfaces_job
+    function. It can't work standalone. We either provide a job id or the results 
+    directly
     """
+
     current_job = get_current_job()
-    interface_raw_data = results
+    #We either provide a job id or the results directly
+    if previous_job_id:
+        previous_job = Job.fetch(previous_job_id, connection=current_job.connection)
+        if previous_job:
+            interface_raw_data = previous_job.result.get("interface_list")
+            print(f"\n\n\n{interface_raw_data}\n\n\n")
+    else:
+        interface_raw_data = results
+
     session_id = current_job.meta.get("session_id")
-    run_chain = current_job.meta.get("run_chain")
+    run_chain = current_job.meta.get("run_chain",False)
 
 
 
@@ -393,7 +405,7 @@ def fetch_vlans_job(device_id: int):
         }
 
         session_id = current_job.meta.get("session_id")
-        run_chain = current_job.meta.get("run_chain")   
+        run_chain = current_job.meta.get("run_chain",False)   
         if results:
             ws_message = f"Step 6: VLANs fetched successfully from the device"
             log_to_ws(session_id, ws_message) 
@@ -482,7 +494,7 @@ def post_fetch_vlans_job(device_id,results):
     update_db = apiut.update_device_vlans_db(device_id, vlan_list_diff)
     current_job = get_current_job()
     session_id = current_job.meta.get("session_id")
-    run_chain = current_job.meta.get("run_chain")
+    run_chain = current_job.meta.get("run_chain",False)
     if update_db and run_chain:
         log_to_ws(session_id, "Step 7: VLANs updated in database.")
         log_to_ws(session_id, f"\x1b[32m--- [COMPLETED] Provisioning completed ---\x1b[0m")
@@ -605,4 +617,30 @@ def create_vlan_job(device_ip, vlan_id, vlan_name):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred: {str(e)}"
         )
+    
+def sync_device_config_job(device_id: int):
+    """
+    Worker function to sync device configuration.
+    We use depends_on to ensure that the jobs are executed in the correct order.
+    We pass the previous job id to the next job to ensure that the results are 
+    passed correctly.
+    job2 is waiting in deferred status in redis until job1 is completed.
+    job3 is waiting in deferred status in redis until job2 is completed.
+    """
+    job1 = system_q.enqueue(get_interfaces_job, device_id)
+    job2 = system_q.enqueue(post_get_interfaces_job, 
+                            device_id,
+                            previous_job_id=job1.id,
+                            depends_on=job1)
+    job3 = system_q.enqueue(fetch_vlans_job, device_id, depends_on=job2)
+
+    print(f"Syncing device configuration for device_id: {device_id}")
+
+    return {
+        "job_ids": [job1.id, job2.id, job3.id],
+        "status": "Success",
+        "device_id": device_id,
+        "job_type" : "sync_device_config",
+        "message": f"Device configuration successfully synced."
+    }    
     

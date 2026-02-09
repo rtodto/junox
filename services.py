@@ -114,21 +114,37 @@ async def svc_get_device_ip_by_id_async(db: AsyncSessionLocal, device_id: int):
     
     return device_ip
 
-# def svc_get_device_ip_by_id_sync(db: SessionLocal, device_id: int):
-#     """
-#     Takes device_id as input and returns the IP address synchronously.
-#     Works perfectly inside RQ Workers using SessionLocal.
-#     """
-#     # 1. Create the selection statement
-#     stmt = select(DeviceNet.ip_address).where(DeviceNet.id == device_id)
+
+async def svc_get_device_id_by_ip_async(db: AsyncSessionLocal, device_ip: str):
+    """
+    Takes device_ip as input and returns the device_id asynchronously.
+    """
+    # 1. Create the selection statement
+    stmt = select(DeviceNet.id).where(DeviceNet.ip_address == device_ip)
     
-#     # 2. Execute the query using the sync session
-#     result = db.execute(stmt)
+    # 2. Execute the query and await the result
+    result = await db.execute(stmt)
     
-#     # 3. Get the IP or None
-#     device_ip = result.scalar_one_or_none()
+    # 3. Use scalar_one_or_none to get just the device_id or None
+    device_id = result.scalar_one_or_none()
     
-#     return device_ip
+    return device_id
+
+async def svc_get_device_id_by_hostname_async(db: AsyncSessionLocal, hostname: str):
+    """
+    Takes hostname as input and returns the device_id asynchronously.
+    """
+    # 1. Create the selection statement
+    stmt = select(DeviceNet.id).where(DeviceNet.hostname == hostname)
+    
+    # 2. Execute the query and await the result
+    result = await db.execute(stmt)
+    
+    # 3. Use scalar_one_or_none to get just the device_id or None
+    device_id = result.scalar_one_or_none()
+    
+    return device_id
+
 
 def svc_get_device_ip_by_id_sync(device_id: int, db=None):
     """

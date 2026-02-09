@@ -9,7 +9,19 @@ from fastapi import WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 import os
 
+#Prometeus Grafana
+from fastapi import FastAPI
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
+from prometheus_client import Gauge
+from juniper_cfg.database import engine  # Import your pooled engine
 
+
+# WebSocket
+load_dotenv()
+REDIS_HOST = os.getenv("REDIS_HOST")
+REDIS_PORT = os.getenv("REDIS_PORT")
+redis_client = aioredis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}", decode_responses=True)
 
 app = FastAPI(
     title="JunoX API",
@@ -44,7 +56,6 @@ app.include_router(
     prefix="/api/v1"
 )
 
-# main.py
 
 @app.get("/health", include_in_schema=False)
 def health_check():
@@ -58,13 +69,33 @@ def health_check():
         "database": "connected" # Check DB health later, monitoring etc.
     }
 
-# WebSocket
-load_dotenv()
-REDIS_HOST = os.getenv("REDIS_HOST")
-REDIS_PORT = os.getenv("REDIS_PORT")
+# 1. Define your metrics
+# Counter: Only goes up (Total jobs)
+JOBS_PROCESSED = Counter('eda_jobs_total', 'Total number of EDA jobs processed', ['job_type', 'status'])
+# Histogram: Tracks how long things take
+JOB_LATENCY = Histogram('eda_job_duration_seconds', 'Time spent processing job', ['job_type'])
+# 1. Define Gauges (Gauges can go up AND down, perfect for pools)
+DB_POOL_SIZE = Gauge('db_pool_checkedin_connections', 'Connections currently in the pool')
+DB_POOL_CHECKEDOUT = Gauge('db_pool_checkedout_connections', 'Connections currently being used')
+
+# 2. The Metrics Endpoint for Prometheus to "Scrape"
+@app.get("/metrics")
+def metrics():
 
 
-redis_client = aioredis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}", decode_responses=True)
+    # 2. Update Gauge values with live data from the SQLAlchemy engine
+    # .size() is the total pool, .checkedin() are idle, .checkedout() are busy
+    pool_stats = engine.pool.status()
+    
+    # Extract numbers from the status string (SQLAlchemy specific)
+    # Usually: "Pool size: 10  Connections in pool: 5 Current Overflow: 0"
+    DB_POOL_SIZE.set(engine.pool.checkedin())
+    DB_POOL_CHECKEDOUT.set(engine.pool.checkedout())
+
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+
 
 @app.websocket("/ws/logs/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):

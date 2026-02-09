@@ -19,6 +19,8 @@ router = APIRouter(
     tags=["Devices"]
 )
 
+import time 
+
 @router.get("/", response_model=List[DeviceResponse])
 async def get_devices(
     db: AsyncSession = Depends(get_async_db), # Use the async session
@@ -33,7 +35,7 @@ async def get_devices(
 
     # 2. Use the modern select statement
     stmt = select(models.DeviceNet)
-    
+
     # 3. AWAIT the execution
     result = await db.execute(stmt)
     
@@ -85,6 +87,7 @@ async def provision_device(device_hostname: str,
         connection=system_q.connection,
     )
     
+    job.meta["session_id"] = session_id
     job.meta["run_chain"] = True #By this we inform other jobs in the chain that req is from endpoint. 
     job.save_meta()
     system_q.enqueue_job(job)
@@ -93,7 +96,7 @@ async def provision_device(device_hostname: str,
     monitor_url = str(request.url_for("get_job_status", job_id=job_id))
     
     if session_channel:
-        start_msg = "---Provisioning job initiated ---"
+        start_msg = "--- Provisioning job initiated ---"
         r.publish(session_channel,start_msg)
 
     return {
